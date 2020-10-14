@@ -73,7 +73,7 @@ def scalaVersionSpecificFolders(srcName: String, srcBaseDir: java.io.File, scala
       .flatMap(_.sharedSrcDir(srcBaseDir, srcName).toList.map(f => file(f.getPath + suffix)))
   CrossVersion.partialVersion(scalaVersion) match {
     case Some((2, y)) => extraDirs("-2.x") ++ (if (y >= 13) extraDirs("-2.13+") else Nil)
-    case Some((0, _)) => extraDirs("-2.13+") ++ extraDirs("-3.x")
+    case Some((0 | 3, _)) => extraDirs("-2.13+") ++ extraDirs("-3.x")
     case _            => Nil
   }
 }
