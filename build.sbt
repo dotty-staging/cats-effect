@@ -247,7 +247,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform)
       "org.typelevel" %%% "cats-core" % CatsVersion,
       "org.typelevel" %%% "cats-laws" % CatsVersion % Test,
       "org.typelevel" %%% "discipline-munit" % DisciplineMunitVersion % Test
-    ),
+    ).map(_.withDottyCompat(scalaVersion.value)),
     libraryDependencies ++= {
       if (isDotty.value)
         Seq(
@@ -284,7 +284,7 @@ lazy val laws = crossProject(JSPlatform, JVMPlatform)
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-laws" % CatsVersion,
       "org.typelevel" %%% "discipline-munit" % DisciplineMunitVersion % Test
-    )
+    ).map(_.withDottyCompat(scalaVersion.value))
   )
   .jvmSettings(
     mimaPreviousArtifacts := {
@@ -309,7 +309,7 @@ lazy val runtimeTests = project
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-laws" % CatsVersion,
       "org.typelevel" %%% "discipline-munit" % DisciplineMunitVersion % Test
-    )
+    ).map(_.withDottyCompat(scalaVersion.value))
   )
   .configs(FullTracingTest)
   .settings(inConfig(FullTracingTest)(Defaults.testSettings): _*)
