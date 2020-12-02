@@ -158,7 +158,7 @@ lazy val kernel = crossProject(JSPlatform, JVMPlatform).in(file("kernel"))
     name := "cats-effect-kernel",
     libraryDependencies += "org.specs2" %%% "specs2-core" % Specs2Version % Test)
   .settings(dottyLibrarySettings)
-  .settings(libraryDependencies += "org.typelevel" %%% "cats-core" % CatsVersion)
+  .settings(libraryDependencies += ("org.typelevel" %%% "cats-core" % CatsVersion).withDottyCompat(scalaVersion.value))
 
 /**
  * Reference implementations (including a pure ConcurrentBracket), generic ScalaCheck
@@ -172,7 +172,8 @@ lazy val testkit = crossProject(JSPlatform, JVMPlatform).in(file("testkit"))
     libraryDependencies ++= Seq(
       "org.typelevel"  %%% "cats-free"  % CatsVersion,
       "org.scalacheck" %%% "scalacheck" % ScalaCheckVersion,
-      "org.typelevel"  %%% "coop"       % "1.0.0-M2"))
+      "org.typelevel"  %%% "coop"       % "1.0.0-M2",
+    ).map(_.withDottyCompat(scalaVersion.value)))
 
 /**
  * The laws which constrain the abstractions. This is split from kernel to avoid
@@ -186,7 +187,8 @@ lazy val laws = crossProject(JSPlatform, JVMPlatform).in(file("laws"))
 
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-laws" % CatsVersion,
-      "org.typelevel" %%% "discipline-specs2" % DisciplineVersion % Test))
+      "org.typelevel" %%% "discipline-specs2" % DisciplineVersion % Test,
+    ).map(_.withDottyCompat(scalaVersion.value)))
 
 /**
  * Concrete, production-grade implementations of the abstractions. Or, more
@@ -201,7 +203,8 @@ lazy val core = crossProject(JSPlatform, JVMPlatform).in(file("core"))
 
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "discipline-specs2" % DisciplineVersion % Test,
-      "org.typelevel" %%% "cats-kernel-laws"  % CatsVersion       % Test))
+      "org.typelevel" %%% "cats-kernel-laws"  % CatsVersion       % Test,
+    ).map(_.withDottyCompat(scalaVersion.value)))
   .jvmSettings(
     Test / fork := true,
     Test / javaOptions += s"-Dsbt.classpath=${(Test / fullClasspath).value.map(_.data.getAbsolutePath).mkString(File.pathSeparator)}")
