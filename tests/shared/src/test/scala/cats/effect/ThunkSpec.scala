@@ -18,12 +18,12 @@ package cats.effect
 
 class ThunkSpec extends BaseSpec {
 
-  "Thunk.asFunction0" should {
-    "return the same function" in {
-      var i = 0
-      val f = () => i += 1
-      Thunk.asFunction0(f()) eq f
-    }
-  }
+  // "Thunk.asFunction0" should {
+  //   "return the same function" in {
+  //     var i = 0
+  //     val f = () => i += 1
+  //     Thunk.asFunction0(f()) eq f
+  //   }
+  // }
 
 }
