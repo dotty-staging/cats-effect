@@ -859,7 +859,7 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
               case Left(io) => Left(io.attempt)
               case Right(a) => Right(a.asRight[Throwable])
             }
-            .handleError(t => Right(t.asLeft[IO[B]]))
+            .handleError(t => t.asLeft.asRight)
 
         case IO.HandleErrorWith(ioe, f, _) =>
           interpret(ioe)
