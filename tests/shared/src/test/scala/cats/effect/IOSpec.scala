@@ -222,7 +222,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       }
 
       "result in an NPE if deferring a null IO" in ticked { implicit ticker =>
-        IO.defer(null)
+        IO.defer(null.nn)
           .attempt
           .map(_.left.toOption.get.isInstanceOf[NullPointerException]) must completeAs(true)
       }
@@ -327,18 +327,18 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       "repeated async callback" in ticked { implicit ticker =>
         case object TestException extends RuntimeException
 
-        var cb: Either[Throwable, Int] => Unit = null
+        var cb: (Either[Throwable, Int] => Unit) | Null = null
 
         val async = IO.async_[Int] { cb0 => cb = cb0 }
 
         val test = for {
           fiber <- async.start
           _ <- IO(ticker.ctx.tick())
-          _ <- IO(cb(Right(42)))
+          _ <- IO(cb.nn(Right(42)))
           _ <- IO(ticker.ctx.tick())
-          _ <- IO(cb(Right(43)))
+          _ <- IO(cb.nn(Right(43)))
           _ <- IO(ticker.ctx.tick())
-          _ <- IO(cb(Left(TestException)))
+          _ <- IO(cb.nn(Left(TestException)))
           _ <- IO(ticker.ctx.tick())
           value <- fiber.joinWithNever
         } yield value
@@ -349,7 +349,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       "repeated async callback real" in real {
         case object TestException extends RuntimeException
 
-        var cb: Either[Throwable, Int] => Unit = null
+        var cb: (Either[Throwable, Int] => Unit) | Null = null
 
         val test = for {
           latch1 <- Deferred[IO, Unit]
@@ -359,9 +359,9 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
               IO { cb = cb0 } *> latch1.complete(()) *> latch2.get *> IO.pure(None)
             }.start
           _ <- latch1.get
-          _ <- IO(cb(Right(42)))
-          _ <- IO(cb(Right(43)))
-          _ <- IO(cb(Left(TestException)))
+          _ <- IO(cb.nn(Right(42)))
+          _ <- IO(cb.nn(Right(43)))
+          _ <- IO(cb.nn(Left(TestException)))
           _ <- latch2.complete(())
           value <- fiber.joinWithNever
         } yield value
@@ -934,7 +934,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
 
       "ensure async callback is suppressed during suspension of async finalizers" in ticked {
         implicit ticker =>
-          var cb: Either[Throwable, Unit] => Unit = null
+          var cb: (Either[Throwable, Unit] => Unit) | Null = null
 
           val subject = IO.async[Unit] { cb0 =>
             IO {
@@ -949,7 +949,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
             _ <- IO(ticker.ctx.tick()) // schedule everything
             _ <- f.cancel.start
             _ <- IO(ticker.ctx.tick()) // get inside the finalizer suspension
-            _ <- IO(cb(Right(())))
+            _ <- IO(cb.nn(Right(())))
             _ <- IO(ticker.ctx.tick()) // show that the finalizer didn't explode
           } yield ()
 

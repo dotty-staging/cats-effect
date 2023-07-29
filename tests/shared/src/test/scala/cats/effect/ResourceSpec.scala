@@ -774,7 +774,7 @@ class ResourceSpec extends BaseSpec with ScalaCheck with Discipline {
           var loserClosed = false
           var completed = false
 
-          var results: Either[String, String] = null
+          var results: Either[String, String]|Null = null
 
           val winner = Resource
             .make(IO.unit)(_ => IO { winnerClosed = true })
@@ -803,13 +803,13 @@ class ResourceSpec extends BaseSpec with ScalaCheck with Discipline {
           winnerClosed must beFalse
           loserClosed must beTrue
           completed must beFalse
-          results must beLeft("winner")
+          results.nn must beLeft("winner")
 
           ticker.ctx.advanceAndTick(50.millis)
           winnerClosed must beFalse
           loserClosed must beTrue
           completed must beFalse
-          results must beLeft("winner")
+          results.nn must beLeft("winner")
 
           ticker.ctx.advanceAndTick(1.second)
           winnerClosed must beTrue

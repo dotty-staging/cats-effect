@@ -21,16 +21,16 @@ private[effect] final class RingBuffer private (logSize: Int) {
   private[this] val length = 1 << logSize
   private[this] val mask = length - 1
 
-  private[this] var buffer: Array[TracingEvent] = new Array(length)
+  private[this] var buffer: Array[TracingEvent] | Null = new Array(length)
   private[this] var index: Int = 0
 
   def push(te: TracingEvent): Unit = {
     val idx = index & mask
-    buffer(idx) = te
+    buffer.nn(idx) = te
     index += 1
   }
 
-  def peek: TracingEvent = buffer((index - 1) & mask)
+  def peek: TracingEvent = buffer.nn((index - 1) & mask)
 
   /**
    * Returns a list in reverse order of insertion.
@@ -43,7 +43,7 @@ private[effect] final class RingBuffer private (logSize: Int) {
     val end = idx
     var i = start
     while (i < end) {
-      result ::= buffer(i & msk)
+      result ::= buffer.nn(i & msk)
       i += 1
     }
     result

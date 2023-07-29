@@ -40,21 +40,21 @@ import java.util.concurrent.locks.LockSupport
 private final class WorkerThread(
     idx: Int,
     // Local queue instance with exclusive write access.
-    private[this] var queue: LocalQueue,
+    private[this] var queue: LocalQueue | Null,
     // The state of the `WorkerThread` (parked/unparked).
-    private[this] var parked: AtomicBoolean,
+    private[this] var parked: AtomicBoolean | Null,
     // External queue used by the local queue for offloading excess fibers, as well as
     // for drawing fibers when the local queue is exhausted.
-    private[this] var external: ScalQueue[AnyRef],
+    private[this] var external: ScalQueue[AnyRef] | Null,
     // A mutable reference to a fiber which is used to bypass the local queue
     // when a `cede` operation would enqueue a fiber to the empty local queue
     // and then proceed to dequeue the same fiber again from the queue. This not
     // only avoids unnecessary synchronization, but also avoids notifying other
     // worker threads that new work has become available, even though that's not
     // true in tis case.
-    private[this] var cedeBypass: IOFiber[_],
+    private[this] var cedeBypass: IOFiber[_] | Null,
     // A worker-thread-local weak bag for tracking suspended fibers.
-    private[this] var fiberBag: WeakBag[IOFiber[_]],
+    private[this] var fiberBag: WeakBag[IOFiber[_]] | Null,
     // Reference to the `WorkStealingThreadPool` in which this thread operates.
     private[this] val pool: WorkStealingThreadPool)
     extends Thread
@@ -87,7 +87,7 @@ private final class WorkerThread(
    * `parked` signal of this worker thread. Threads that want to observe this value should read
    * both synchronization variables.
    */
-  private[this] var _active: IOFiber[_] = _
+  private[this] var _active: IOFiber[_] | Null = _
 
   private val dataTransfer: ArrayBlockingQueue[WorkerThread.Data] =
     new ArrayBlockingQueue(1)
@@ -113,7 +113,7 @@ private final class WorkerThread(
    */
   def schedule(fiber: IOFiber[_]): Unit = {
     val rnd = random
-    queue.enqueue(fiber, external, rnd)
+    queue.nn.enqueue(fiber, external.nn, rnd)
     pool.notifyParked(rnd)
     ()
   }
@@ -131,7 +131,7 @@ private final class WorkerThread(
    *   the fiber that `cede`s/`autoCede`s
    */
   def reschedule(fiber: IOFiber[_]): Unit = {
-    if ((cedeBypass eq null) && queue.isEmpty()) {
+    if ((cedeBypass eq null) && queue.nn.isEmpty()) {
       cedeBypass = fiber
     } else {
       schedule(fiber)
@@ -156,7 +156,7 @@ private final class WorkerThread(
    *   `true` if this worker thread is owned by the provided work stealing thread pool, `false`
    *   otherwise
    */
-  def isOwnedBy(threadPool: WorkStealingThreadPool): Boolean =
+  def isOwnedBy(threadPool: WorkStealingThreadPool | Null): Boolean =
     (pool eq threadPool) && !blocking
 
   /**
@@ -183,7 +183,7 @@ private final class WorkerThread(
    *   a handle for deregistering the fiber on resumption
    */
   def monitor(fiber: IOFiber[_]): WeakBag.Handle =
-    fiberBag.insert(fiber)
+    fiberBag.nn.insert(fiber)
 
   /**
    * The index of the worker thread.
@@ -194,7 +194,7 @@ private final class WorkerThread(
   /**
    * A reference to the active fiber.
    */
-  private[unsafe] def active: IOFiber[_] =
+  private[unsafe] def active: IOFiber[_] | Null =
     _active
 
   /**
@@ -203,7 +203,7 @@ private final class WorkerThread(
    * @param fiber
    *   the new active fiber
    */
-  private[unsafe] def active_=(fiber: IOFiber[_]): Unit = {
+  private[unsafe] def active_=(fiber: IOFiber[_] | Null): Unit = {
     _active = fiber
   }
 
@@ -214,7 +214,7 @@ private final class WorkerThread(
    *   a set of suspended fibers tracked by this worker thread
    */
   private[unsafe] def suspendedSnapshot(): Set[IOFiber[_]] =
-    fiberBag.toSet
+    fiberBag.nn.toSet
 
   /**
    * The run loop of the [[WorkerThread]].
@@ -304,7 +304,7 @@ private final class WorkerThread(
           pool.shutdown()
         else
           // Spurious wakeup check.
-          cont = parked.get()
+          cont = parked.nn.get()
       }
     }
 
@@ -360,7 +360,7 @@ private final class WorkerThread(
       ((state & ExternalQueueTicksMask): @switch) match {
         case 0 =>
           // Obtain a fiber or batch of fibers from the external queue.
-          val element = external.poll(rnd)
+          val element = external.nn.poll(rnd)
           if (element.isInstanceOf[Array[IOFiber[_]]]) {
             val batch = element.asInstanceOf[Array[IOFiber[_]]]
             // The dequeued element was a batch of fibers. Enqueue the whole
@@ -368,9 +368,9 @@ private final class WorkerThread(
 
             // Make room for the batch if the local queue cannot accomodate
             // all of the fibers as is.
-            queue.drainBatch(external, rnd)
+            queue.nn.drainBatch(external.nn, rnd)
 
-            val fiber = queue.enqueueBatch(batch, self)
+            val fiber = queue.nn.enqueueBatch(batch, self)
             // Many fibers have been exchanged between the external and the
             // local queue. Notify other worker threads.
             pool.notifyParked(rnd)
@@ -380,7 +380,7 @@ private final class WorkerThread(
 
             if (isStackTracing) {
               _active = fiber
-              parked.lazySet(false)
+              parked.nn.lazySet(false)
             }
 
             // The dequeued element is a single fiber. Execute it immediately.
@@ -393,7 +393,7 @@ private final class WorkerThread(
         case 1 =>
           // Check the external queue after a failed dequeue from the local
           // queue (due to the local queue being empty).
-          val element = external.poll(rnd)
+          val element = external.nn.poll(rnd)
           if (element.isInstanceOf[Array[IOFiber[_]]]) {
             val batch = element.asInstanceOf[Array[IOFiber[_]]]
             // The dequeued element was a batch of fibers. Enqueue the whole
@@ -401,7 +401,7 @@ private final class WorkerThread(
             // It is safe to directly enqueue the whole batch because we know
             // that in this state of the worker thread state machine, the
             // local queue is empty.
-            val fiber = queue.enqueueBatch(batch, self)
+            val fiber = queue.nn.enqueueBatch(batch, self)
             // Many fibers have been exchanged between the external and the
             // local queue. Notify other worker threads.
             pool.notifyParked(rnd)
@@ -414,7 +414,7 @@ private final class WorkerThread(
 
             if (isStackTracing) {
               _active = fiber
-              parked.lazySet(false)
+              parked.nn.lazySet(false)
             }
 
             // The dequeued element is a single fiber. Execute it immediately.
@@ -435,7 +435,7 @@ private final class WorkerThread(
                 _active = null
               }
 
-              parked.lazySet(true)
+              parked.nn.lazySet(true)
               // Announce that the worker thread is parking.
               pool.transitionWorkerToParked()
               // Park the thread.
@@ -464,7 +464,7 @@ private final class WorkerThread(
               _active = null
             }
 
-            parked.lazySet(true)
+            parked.nn.lazySet(true)
             // Announce that the worker thread which was searching for work is now
             // parking. This checks if the parking worker thread was the last
             // actively searching thread.
@@ -485,7 +485,7 @@ private final class WorkerThread(
         case 3 =>
           // Check the external queue after a failed dequeue from the local
           // queue (due to the local queue being empty).
-          val element = external.poll(rnd)
+          val element = external.nn.poll(rnd)
           if (element.isInstanceOf[Array[IOFiber[_]]]) {
             val batch = element.asInstanceOf[Array[IOFiber[_]]]
             // Announce that the current thread is no longer looking for work.
@@ -496,7 +496,7 @@ private final class WorkerThread(
             // It is safe to directly enqueue the whole batch because we know
             // that in this state of the worker thread state machine, the
             // local queue is empty.
-            val fiber = queue.enqueueBatch(batch, self)
+            val fiber = queue.nn.enqueueBatch(batch, self)
             // Many fibers have been exchanged between the external and the
             // local queue. Notify other worker threads.
             pool.notifyParked(rnd)
@@ -510,7 +510,7 @@ private final class WorkerThread(
 
             if (isStackTracing) {
               _active = fiber
-              parked.lazySet(false)
+              parked.nn.lazySet(false)
             }
 
             pool.transitionWorkerFromSearching(rnd)
@@ -533,7 +533,7 @@ private final class WorkerThread(
           val fiber = if (cedeBypass eq null) {
             // The queue bypass reference is empty.
             // Fall back to the local queue.
-            queue.dequeue(self)
+            queue.nn.dequeue(self)
           } else {
             // Fetch and null out the queue bypass reference.
             val f = cedeBypass
@@ -644,17 +644,17 @@ private final class WorkerThread(
    *   the number of asynchronously suspended fibers
    */
   def getSuspendedFiberCount(): Int =
-    fiberBag.size
+    fiberBag.nn.size
 }
 
 private object WorkerThread {
   final class Data(
       val index: Int,
-      val queue: LocalQueue,
-      val parked: AtomicBoolean,
-      val external: ScalQueue[AnyRef],
-      val cedeBypass: IOFiber[_],
-      val fiberBag: WeakBag[IOFiber[_]]
+      val queue: LocalQueue | Null,
+      val parked: AtomicBoolean | Null,
+      val external: ScalQueue[AnyRef] | Null,
+      val cedeBypass: IOFiber[_] | Null,
+      val fiberBag: WeakBag[IOFiber[_]] | Null
   )
 
   private[WorkerThread] val NullData: Data =

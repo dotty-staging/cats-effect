@@ -137,7 +137,7 @@ import scala.util.Try
  */
 trait IOApp {
 
-  private[this] var _runtime: unsafe.IORuntime = null
+  private[this] var _runtime: unsafe.IORuntime|Null = null
 
   /**
    * The runtime which will be used by `IOApp` to evaluate the [[IO]] produced by the `run`
@@ -152,7 +152,7 @@ trait IOApp {
    *
    * This value is guaranteed to be equal to [[unsafe.IORuntime.global]].
    */
-  protected def runtime: unsafe.IORuntime = _runtime
+  protected def runtime: unsafe.IORuntime|Null = _runtime
 
   /**
    * The configuration used to initialize the [[runtime]] which will evaluate the [[IO]]
@@ -201,7 +201,7 @@ trait IOApp {
 
     if (LinkingInfo.developmentMode && isStackTracing) {
       val listener: js.Function0[Unit] = () =>
-        runtime.fiberMonitor.liveFiberSnapshot(System.err.print(_))
+        runtime.nn.fiberMonitor.liveFiberSnapshot(System.err.print(_))
       process.on("SIGUSR2", listener)
       process.on("SIGINFO", listener)
     }
@@ -243,11 +243,11 @@ trait IOApp {
           throw t // For runtimes where hardExit is a no-op
         },
         c => hardExit(c.code)
-      )(runtime)
+      )(runtime.nn)
 
     def gracefulExit(code: Int): Unit = {
       // Optionally setup a timeout to hard exit
-      runtime.config.shutdownHookTimeout match {
+      runtime.nn.config.shutdownHookTimeout match {
         case Duration.Zero =>
           hardExit(code)
           None
@@ -259,7 +259,7 @@ trait IOApp {
 
       // Report the exit code before cancelling, b/c the fiber will exit itself on cancel
       cancelCode = code
-      fiber.cancel.unsafeRunAndForget()(runtime)
+      fiber.cancel.unsafeRunAndForget()(runtime.nn)
     }
 
     // Override it with one that cancels the fiber instead (if process exists)

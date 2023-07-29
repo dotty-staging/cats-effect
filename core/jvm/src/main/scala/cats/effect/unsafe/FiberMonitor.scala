@@ -46,7 +46,7 @@ import java.util.concurrent.ThreadLocalRandom
 private[effect] final class FiberMonitor(
     // A reference to the compute pool of the `IORuntime` in which this suspended fiber bag
     // operates. `null` if the compute pool of the `IORuntime` is not a `WorkStealingThreadPool`.
-    private[this] val compute: WorkStealingThreadPool
+    private[this] val compute: WorkStealingThreadPool | Null
 ) extends FiberMonitorShared {
 
   private[this] val size: Int = Runtime.getRuntime().availableProcessors() << 2
@@ -92,56 +92,58 @@ private[effect] final class FiberMonitor(
    */
   def liveFiberSnapshot(print: String => Unit): Unit =
     if (TracingConstants.isStackTracing)
-      Option(compute).fold {
-        printFibers(foreignFibers(), "ACTIVE")(print)
-        print(newline)
-      } { compute =>
-        val (rawExternal, workersMap, rawSuspended) = compute.liveFibers()
-        val rawForeign = foreignFibers()
+      Option
+        .fromNullable(compute)
+        .fold {
+          printFibers(foreignFibers(), "ACTIVE")(print)
+          print(newline)
+        } { compute =>
+          val (rawExternal, workersMap, rawSuspended) = compute.liveFibers()
+          val rawForeign = foreignFibers()
 
-        // We trust the sources of data in the following order, ordered from
-        // most trustworthy to least trustworthy.
-        // 1. Fibers from the worker threads
-        // 2. Fibers from the external queue
-        // 3. Fibers from the foreign synchronized fallback weak GC maps
-        // 4. Fibers from the suspended thread local GC maps
+          // We trust the sources of data in the following order, ordered from
+          // most trustworthy to least trustworthy.
+          // 1. Fibers from the worker threads
+          // 2. Fibers from the external queue
+          // 3. Fibers from the foreign synchronized fallback weak GC maps
+          // 4. Fibers from the suspended thread local GC maps
 
-        val localAndActive = workersMap.foldLeft(Set.empty[IOFiber[_]]) {
-          case (acc, (_, (active, local))) =>
-            (acc ++ local) ++ active.toSet
+          val localAndActive = workersMap.foldLeft(Set.empty[IOFiber[_]]) {
+            case (acc, (_, (active, local))) =>
+              (acc ++ local) ++ active.toSet
+          }
+          val external = rawExternal -- localAndActive
+          val suspended = rawSuspended -- localAndActive -- external
+          val foreign = rawForeign -- localAndActive -- external -- suspended
+
+          val workersStatuses = workersMap map {
+            case (worker, (active, local)) =>
+              val status =
+                if (worker.getState() == Thread.State.RUNNABLE) "RUNNING" else "BLOCKED"
+
+              val workerString = s"$worker (#${worker.index}): ${local.size} enqueued"
+
+              print(doubleNewline)
+              active.map(fiberString(_, status)).foreach(print(_))
+              printFibers(local, "YIELDING")(print)
+
+              workerString
+          }
+
+          printFibers(external, "YIELDING")(print)
+          printFibers(suspended, "WAITING")(print)
+          printFibers(foreign, "ACTIVE")(print)
+
+          print(doubleNewline)
+          print(workersStatuses.mkString(newline))
+
+          val globalStatus =
+            s"Global: enqueued ${external.size}, foreign ${foreign.size}, waiting ${suspended.size}"
+
+          print(doubleNewline)
+          print(globalStatus)
+          print(newline)
         }
-        val external = rawExternal -- localAndActive
-        val suspended = rawSuspended -- localAndActive -- external
-        val foreign = rawForeign -- localAndActive -- external -- suspended
-
-        val workersStatuses = workersMap map {
-          case (worker, (active, local)) =>
-            val status =
-              if (worker.getState() == Thread.State.RUNNABLE) "RUNNING" else "BLOCKED"
-
-            val workerString = s"$worker (#${worker.index}): ${local.size} enqueued"
-
-            print(doubleNewline)
-            active.map(fiberString(_, status)).foreach(print(_))
-            printFibers(local, "YIELDING")(print)
-
-            workerString
-        }
-
-        printFibers(external, "YIELDING")(print)
-        printFibers(suspended, "WAITING")(print)
-        printFibers(foreign, "ACTIVE")(print)
-
-        print(doubleNewline)
-        print(workersStatuses.mkString(newline))
-
-        val globalStatus =
-          s"Global: enqueued ${external.size}, foreign ${foreign.size}, waiting ${suspended.size}"
-
-        print(doubleNewline)
-        print(globalStatus)
-        print(newline)
-      }
     else ()
 
   private[this] def monitorFallback(fiber: IOFiber[_]): WeakBag.Handle = {

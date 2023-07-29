@@ -28,7 +28,7 @@ private[tracing] abstract class TracingPlatform extends ClassValue[TracingEvent]
     buildEvent()
   }
 
-  def calculateTracingEvent(key: Any): TracingEvent = {
+  def calculateTracingEvent(key: Any): TracingEvent | Null = {
     val cls = key.getClass
     if (isCachedStackTracing) {
       get(cls)

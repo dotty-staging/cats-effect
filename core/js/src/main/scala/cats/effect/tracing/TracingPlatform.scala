@@ -24,7 +24,7 @@ import scala.scalajs.{js, LinkingInfo}
 
 private[tracing] abstract class TracingPlatform { self: Tracing.type =>
 
-  private[this] val cache = mutable.Map.empty[Any, TracingEvent].withDefaultValue(null)
+  private[this] val cache = mutable.Map.empty[Any, TracingEvent|Null].withDefaultValue(null)
   private[this] val function0Property =
     js.Object.getOwnPropertyNames((() => ()).asInstanceOf[js.Object])(0)
   private[this] val function1Property =
@@ -32,7 +32,7 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
 
   import TracingConstants._
 
-  def calculateTracingEvent[A](f: Function0[A]): TracingEvent = {
+  def calculateTracingEvent[A](f: Function0[A]): TracingEvent | Null = {
     calculateTracingEvent(
       f.asInstanceOf[js.Dynamic].selectDynamic(function0Property).toString())
   }
@@ -43,11 +43,11 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
   }
 
   // We could have a catch-all for non-functions, but explicitly enumerating makes sure we handle each case correctly
-  def calculateTracingEvent[F[_], A, B](cont: Cont[F, A, B]): TracingEvent = {
+  def calculateTracingEvent[F[_], A, B](cont: Cont[F, A, B]): TracingEvent|Null = {
     calculateTracingEvent(cont.getClass())
   }
 
-  private[this] final val calculateTracingEvent: Any => TracingEvent = {
+  private[this] final val calculateTracingEvent: Any => (TracingEvent|Null) = {
     if (LinkingInfo.developmentMode) {
       if (isCachedStackTracing) { key =>
         val current = cache(key)

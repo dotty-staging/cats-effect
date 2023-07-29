@@ -37,8 +37,8 @@ import scala.scalajs.js
  */
 private[unsafe] abstract class Reference[T] private[ref] (
     referent: T,
-    queue: ReferenceQueue[_ >: T]) {
-  private[this] var weakRef = new js.WeakRef(referent)
+    queue: ReferenceQueue[_ >: T]|Null) {
+  private[this] var weakRef: js.WeakRef[T]|Null = new js.WeakRef(referent)
   var enqueued: Boolean = false
 
   if (queue != null)
@@ -46,7 +46,7 @@ private[unsafe] abstract class Reference[T] private[ref] (
 
   def get(): T =
     if (weakRef == null) null.asInstanceOf[T]
-    else weakRef.deref().getOrElse(null.asInstanceOf[T])
+    else weakRef.nn.deref().getOrElse(null.asInstanceOf[T])
 
   def clear(): Unit = {
     if (queue != null)

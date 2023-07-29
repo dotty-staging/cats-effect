@@ -30,7 +30,7 @@ private[effect] abstract class IOCompanionPlatform { this: IO.type =>
 
   def blocking[A](thunk: => A): IO[A] = {
     val fn = Thunk.asFunction0(thunk)
-    Blocking(TypeBlocking, fn, Tracing.calculateTracingEvent(fn.getClass))
+    Blocking(TypeBlocking, fn, Tracing.calculateTracingEvent(fn.getClass).nn)
   }
 
   // this cannot be marked private[effect] because of static forwarders in Java
@@ -40,17 +40,17 @@ private[effect] abstract class IOCompanionPlatform { this: IO.type =>
     Blocking(
       if (many) TypeInterruptibleMany else TypeInterruptibleOnce,
       fn,
-      Tracing.calculateTracingEvent(fn.getClass))
+      Tracing.calculateTracingEvent(fn.getClass).nn)
   }
 
   def interruptible[A](thunk: => A): IO[A] = {
     val fn = Thunk.asFunction0(thunk)
-    Blocking(TypeInterruptibleOnce, fn, Tracing.calculateTracingEvent(fn.getClass))
+    Blocking(TypeInterruptibleOnce, fn, Tracing.calculateTracingEvent(fn.getClass).nn)
   }
 
   def interruptibleMany[A](thunk: => A): IO[A] = {
     val fn = Thunk.asFunction0(thunk)
-    Blocking(TypeInterruptibleMany, fn, Tracing.calculateTracingEvent(fn.getClass))
+    Blocking(TypeInterruptibleMany, fn, Tracing.calculateTracingEvent(fn.getClass).nn)
   }
 
   def suspend[A](hint: Sync.Type)(thunk: => A): IO[A] =
@@ -58,7 +58,7 @@ private[effect] abstract class IOCompanionPlatform { this: IO.type =>
       apply(thunk)
     else {
       val fn = () => thunk
-      Blocking(hint, fn, Tracing.calculateTracingEvent(fn.getClass))
+      Blocking(hint, fn, Tracing.calculateTracingEvent(fn.getClass).nn)
     }
 
   def fromCompletableFuture[A](fut: IO[CompletableFuture[A]]): IO[A] =

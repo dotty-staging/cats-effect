@@ -139,7 +139,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 trait IOApp {
 
-  private[this] var _runtime: unsafe.IORuntime = null
+  private[this] var _runtime: unsafe.IORuntime | Null = null
 
   /**
    * The runtime which will be used by `IOApp` to evaluate the [[IO]] produced by the `run`
@@ -154,7 +154,7 @@ trait IOApp {
    *
    * This value is guaranteed to be equal to [[unsafe.IORuntime.global]].
    */
-  protected def runtime: unsafe.IORuntime = _runtime
+  protected def runtime: unsafe.IORuntime | Null = _runtime
 
   /**
    * The configuration used to initialize the [[runtime]] which will evaluate the [[IO]]
@@ -209,7 +209,9 @@ trait IOApp {
 
       val installed = IORuntime installGlobal {
         val (compute, compDown) =
-          IORuntime.createDefaultComputeThreadPool(runtime, threads = computeWorkerThreadCount)
+          IORuntime.createDefaultComputeThreadPool(
+            runtime.asInstanceOf[unsafe.IORuntime],
+            threads = computeWorkerThreadCount)
 
         val (blocking, blockDown) =
           IORuntime.createDefaultBlockingExecutionContext()
@@ -257,7 +259,7 @@ trait IOApp {
         .flatMap(_ => List("USR1", "INFO"))
 
       liveFiberSnapshotSignal foreach { name =>
-        Signal.handle(name, _ => runtime.fiberMonitor.liveFiberSnapshot(System.err.print(_)))
+        Signal.handle(name, _ => runtime.nn.fiberMonitor.liveFiberSnapshot(System.err.print(_)))
       }
     }
 
@@ -284,15 +286,15 @@ trait IOApp {
           queue.offer(a)
           ()
         }
-      )(runtime)
+      )(runtime.nn)
 
     if (isStackTracing)
-      runtime.fiberMonitor.monitorSuspended(fiber)
+      runtime.nn.fiberMonitor.monitorSuspended(fiber)
 
     def handleShutdown(): Unit = {
       if (counter.compareAndSet(1, 0)) {
         val cancelLatch = new CountDownLatch(1)
-        fiber.cancel.unsafeRunAsync(_ => cancelLatch.countDown())(runtime)
+        fiber.cancel.unsafeRunAsync(_ => cancelLatch.countDown())(runtime.nn)
 
         val timeout = runtimeConfig.shutdownHookTimeout
         if (timeout.isFinite) {
@@ -305,10 +307,10 @@ trait IOApp {
 
       // Clean up after ourselves, relevant for running IOApps in sbt,
       // otherwise scheduler threads will accumulate over time.
-      runtime.shutdown()
+      runtime.nn.shutdown()
     }
 
-    val hook = new Thread(() => handleShutdown())
+    val hook = new Thread((() => handleShutdown()): Runnable)
     hook.setName("io-cancel-hook")
 
     try {
@@ -325,7 +327,7 @@ trait IOApp {
         case ec: ExitCode =>
           // Clean up after ourselves, relevant for running IOApps in sbt,
           // otherwise scheduler threads will accumulate over time.
-          runtime.shutdown()
+          runtime.nn.shutdown()
           if (ec == ExitCode.Success) {
             // Return naturally from main. This allows any non-daemon
             // threads to gracefully complete their work, and managed

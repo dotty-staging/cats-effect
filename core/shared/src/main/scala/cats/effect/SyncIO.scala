@@ -238,7 +238,7 @@ sealed abstract class SyncIO[+A] private () {
         case 1 =>
           val cur = cur0.asInstanceOf[SyncIO.Suspend[Any]]
 
-          var error: Throwable = null
+          var error: Throwable | Null = null
           val r =
             try cur.thunk()
             catch {
@@ -247,7 +247,7 @@ sealed abstract class SyncIO[+A] private () {
 
           val next =
             if (error == null) succeeded(r, 0)
-            else failed(error, 0)
+            else failed(error.nn, 0)
 
           runLoop(next)
 
@@ -344,7 +344,7 @@ sealed abstract class SyncIO[+A] private () {
     def mapK(result: Any, depth: Int): SyncIO[Any] = {
       val f = objectState.pop().asInstanceOf[Any => Any]
 
-      var error: Throwable = null
+      var error: Throwable | Null = null
       val transformed =
         try f(result)
         catch {
@@ -353,10 +353,10 @@ sealed abstract class SyncIO[+A] private () {
 
       if (depth > MaxStackDepth) {
         if (error == null) SyncIO.Pure(transformed)
-        else SyncIO.Error(error)
+        else SyncIO.Error(error.nn)
       } else {
         if (error == null) succeeded(transformed, depth + 1)
-        else failed(error, depth + 1)
+        else failed(error.nn, depth + 1)
       }
     }
 

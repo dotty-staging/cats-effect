@@ -55,6 +55,6 @@ final class Trace private (frames: List[StackTraceElement]) {
 }
 
 private object Trace {
-  def apply(events: RingBuffer): Trace =
+  def apply(events: RingBuffer | Null): Trace =
     new Trace(Tracing.getFrames(events))
 }

@@ -38,7 +38,7 @@ private[kernel] trait AsyncPlatform[F[_]] { this: Async[F] =>
             case (_, t) =>
               cb(Left(t match {
                 case e: CompletionException if e.getCause ne null => e.getCause
-                case _ => t
+                case _ => t.nn
               }))
           }
 

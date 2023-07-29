@@ -167,7 +167,7 @@ class IOAppSpec extends Specification {
 
             // we have to resort to this convoluted approach because Process#destroy kills listeners before killing the process
             val test = File.createTempFile("cats-effect", "finalizer-test")
-            def readTest(): String = {
+            def readTest(): String|Null = {
               val reader = new BufferedReader(new FileReader(test))
               try {
                 reader.readLine()
@@ -195,7 +195,7 @@ class IOAppSpec extends Specification {
             while (readTest() == null && i < 100) {
               i += 1
             }
-            readTest() must contain("canceled")
+            readTest().nn must contain("canceled")
           }
         }
 
