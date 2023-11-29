@@ -26,7 +26,7 @@ private[kernel] trait AsyncPlatform[F[_]] { this: Async[F] =>
     flatMap(iot) { t =>
       async_[A] { cb =>
         val onFulfilled: Function1[A, Unit | Thenable[Unit]] =
-          (v: A) => cb(Right(v)): Unit | Thenable[Unit]
+          (v: A) => (cb(Right(v)): Unit | Thenable[Unit])
 
         val onRejected: Function1[Any, Unit | Thenable[Unit]] = { (a: Any) =>
           val e = a match {
