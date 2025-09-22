@@ -35,7 +35,7 @@ private[tracing] abstract class TracingPlatform extends ClassValue[TracingEvent]
     } else if (isFullStackTracing) {
       buildEvent()
     } else {
-      null
+      null.asInstanceOf[TracingEvent]
     }
   }
 

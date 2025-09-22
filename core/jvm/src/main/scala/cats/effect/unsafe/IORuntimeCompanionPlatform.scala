@@ -129,7 +129,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
     (Scheduler.fromScheduledExecutor(scheduler), { () => scheduler.shutdown() })
   }
 
-  private[this] var _global: IORuntime = null
+  private[this] var _global: IORuntime | Null = null
 
   // we don't need to synchronize this with IOApp, because we control the main thread
   // so instead we just yolo it since the lazy val already synchronizes its own initialization
@@ -158,7 +158,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       }
     }
 
-    _global
+    _global.nn
   }
 
   private[effect] def apply(

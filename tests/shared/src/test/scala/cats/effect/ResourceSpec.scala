@@ -774,7 +774,7 @@ class ResourceSpec extends BaseSpec with ScalaCheck with Discipline {
           var loserClosed = false
           var completed = false
 
-          var results: Either[String, String] = null
+          var results: Either[String, String] = null.asInstanceOf[Either[String, String]]
 
           val winner = Resource
             .make(IO.unit)(_ => IO { winnerClosed = true })

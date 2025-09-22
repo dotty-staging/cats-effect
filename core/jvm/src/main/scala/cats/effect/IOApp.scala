@@ -21,6 +21,7 @@ import cats.effect.unsafe.FiberMonitor
 
 import scala.concurrent.{blocking, CancellationException}
 import scala.util.control.NonFatal
+import scala.compiletime.uninitialized
 
 import java.util.concurrent.{ArrayBlockingQueue, CountDownLatch}
 import java.util.concurrent.atomic.AtomicInteger
@@ -139,7 +140,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 trait IOApp {
 
-  private[this] var _runtime: unsafe.IORuntime = null
+  private[this] var _runtime: unsafe.IORuntime = uninitialized
 
   /**
    * The runtime which will be used by `IOApp` to evaluate the [[IO]] produced by the `run`

@@ -222,7 +222,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       }
 
       "result in an NPE if deferring a null IO" in ticked { implicit ticker =>
-        IO.defer(null)
+        IO.defer(null.asInstanceOf[IO[Any]])
           .attempt
           .map(_.left.toOption.get.isInstanceOf[NullPointerException]) must completeAs(true)
       }
@@ -327,7 +327,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       "repeated async callback" in ticked { implicit ticker =>
         case object TestException extends RuntimeException
 
-        var cb: Either[Throwable, Int] => Unit = null
+        var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
         val async = IO.async_[Int] { cb0 => cb = cb0 }
 
@@ -349,7 +349,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
       "repeated async callback real" in real {
         case object TestException extends RuntimeException
 
-        var cb: Either[Throwable, Int] => Unit = null
+        var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
         val test = for {
           latch1 <- Deferred[IO, Unit]
@@ -934,7 +934,7 @@ class IOSpec extends BaseSpec with Discipline with IOPlatformSpecification {
 
       "ensure async callback is suppressed during suspension of async finalizers" in ticked {
         implicit ticker =>
-          var cb: Either[Throwable, Unit] => Unit = null
+          var cb: Either[Throwable, Unit] => Unit = null.asInstanceOf[Either[Throwable, Unit] => Unit]
 
           val subject = IO.async[Unit] { cb0 =>
             IO {

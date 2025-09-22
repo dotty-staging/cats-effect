@@ -255,20 +255,20 @@ object Console {
         val bytes = ByteBuffer.allocate(64)
         val builder = new JStringBuilder()
 
-        def decodeNext(): CharBuffer = {
+        def decodeNext(): CharBuffer | Null = {
           bytes.clear()
           decodeNextLoop()
         }
 
         @tailrec
-        def decodeNextLoop(): CharBuffer = {
+        def decodeNextLoop(): CharBuffer | Null = {
           val b = in.read()
           if (b == -1) null
           else {
             bytes.put(b.toByte)
             val limit = bytes.limit()
             val position = bytes.position()
-            var result: CharBuffer = null
+            var result: CharBuffer | Null = null
             try {
               bytes.flip()
               result = decoder.decode(bytes)

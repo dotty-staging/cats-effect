@@ -46,7 +46,7 @@ import java.util.concurrent.ThreadLocalRandom
 private[effect] final class FiberMonitor(
     // A reference to the compute pool of the `IORuntime` in which this suspended fiber bag
     // operates. `null` if the compute pool of the `IORuntime` is not a `WorkStealingThreadPool`.
-    private[this] val compute: WorkStealingThreadPool
+    private[this] val compute: WorkStealingThreadPool | Null
 ) extends FiberMonitorShared {
 
   private[this] val size: Int = Runtime.getRuntime().availableProcessors() << 2
@@ -96,7 +96,7 @@ private[effect] final class FiberMonitor(
         printFibers(foreignFibers(), "ACTIVE")(print)
         print(newline)
       } { compute =>
-        val (rawExternal, workersMap, rawSuspended) = compute.liveFibers()
+        val (rawExternal, workersMap, rawSuspended) = compute.nn.liveFibers()
         val rawForeign = foreignFibers()
 
         // We trust the sources of data in the following order, ordered from
@@ -164,7 +164,7 @@ private[effect] final class FiberMonitor(
 }
 
 private[effect] object FiberMonitor {
-  def apply(compute: ExecutionContext): FiberMonitor = {
+  def apply(compute: ExecutionContext | Null): FiberMonitor = {
     if (TracingConstants.isStackTracing && compute.isInstanceOf[WorkStealingThreadPool]) {
       val wstp = compute.asInstanceOf[WorkStealingThreadPool]
       new FiberMonitor(wstp)

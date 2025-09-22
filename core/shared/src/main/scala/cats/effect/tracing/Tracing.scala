@@ -70,7 +70,7 @@ private[effect] object Tracing extends TracingPlatform {
   }
 
   private[this] def getOpAndCallSite(
-      stackTrace: Array[StackTraceElement]): StackTraceElement = {
+      stackTrace: Array[StackTraceElement]): StackTraceElement | Null = {
     val len = stackTrace.length
     var idx = 1
     while (idx < len) {
@@ -89,7 +89,10 @@ private[effect] object Tracing extends TracingPlatform {
     null
   }
 
-  def augmentThrowable(enhancedExceptions: Boolean, t: Throwable, events: RingBuffer): Unit = {
+  def augmentThrowable(
+      enhancedExceptions: Boolean,
+      t: Throwable,
+      events: RingBuffer | Null): Unit = {
     def applyRunLoopFilter(ste: StackTraceElement): Boolean = {
       val name = ste.getClassName
       var i = 0
@@ -127,7 +130,7 @@ private[effect] object Tracing extends TracingPlatform {
         val augmented = stackTrace.last.getClassName.indexOf('@') != -1
         if (!augmented) {
           val prefix = dropRunLoopFrames(stackTrace)
-          val suffix = getFrames(events).toArray
+          val suffix = getFrames(events.nn).toArray
 
           t.setStackTrace(prefix ++ suffix)
         }
@@ -140,6 +143,7 @@ private[effect] object Tracing extends TracingPlatform {
       .toList()
       .collect { case ev: TracingEvent.StackTrace => getOpAndCallSite(ev.getStackTrace) }
       .filter(_ ne null)
+      .asInstanceOf[List[StackTraceElement]]
 
   def prettyPrint(events: RingBuffer): String = {
     val frames = getFrames(events)

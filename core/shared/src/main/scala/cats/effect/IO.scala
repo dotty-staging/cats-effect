@@ -1809,7 +1809,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
   private[effect] final case class Blocking[+A](
       hint: Sync.Type,
       thunk: () => A,
-      event: TracingEvent)
+      event: TracingEvent | Null)
       extends IO[A] {
     def tag = 21
   }

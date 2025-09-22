@@ -51,7 +51,7 @@ private[effect] final class RingBuffer private (logSize: Int) {
 
   def invalidate(): Unit = {
     index = 0
-    buffer = null
+    buffer = null.asInstanceOf[Array[TracingEvent]]
   }
 }
 

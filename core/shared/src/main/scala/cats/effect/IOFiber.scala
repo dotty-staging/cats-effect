@@ -66,7 +66,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 private final class IOFiber[A](
     initLocalState: IOLocalState,
-    cb: OutcomeIO[A] => Unit,
+    cb: (OutcomeIO[A] => Unit) | Null,
     startIO: IO[A],
     startEC: ExecutionContext,
     private[this] val runtime: IORuntime
@@ -85,7 +85,7 @@ private final class IOFiber[A](
    * relocate our runloop to another fiber.
    */
   private[this] var conts: ByteStack = _
-  private[this] val objectState: ArrayStack[AnyRef] = new ArrayStack()
+  private[this] val objectState: ArrayStack[AnyRef | Null] = new ArrayStack()
 
   private[this] var currentCtx: ExecutionContext = startEC
 
@@ -112,7 +112,7 @@ private final class IOFiber[A](
   /* similar prefetch for EndFiber */
   private[this] val IOEndFiber: IO.EndFiber.type = IO.EndFiber
 
-  private[this] val tracingEvents: RingBuffer = if (isStackTracing) {
+  private[this] val tracingEvents: RingBuffer | Null = if (isStackTracing) {
     RingBuffer.empty(runtime.traceBufferLogSize)
   } else null
 
@@ -199,7 +199,7 @@ private final class IOFiber[A](
   /* masks encoding: initMask => no masks, ++ => push, -- => pop */
   @tailrec
   private[this] def runLoop(
-      _cur0: IO[Any],
+      _cur0: IO[Any] | Null,
       cancelationIterations: Int,
       autoCedeIterations: Int): Unit = {
     /*
@@ -222,7 +222,7 @@ private final class IOFiber[A](
 
       if (nextAutoCede <= 0) {
         resumeTag = AutoCedeR
-        resumeIO = _cur0
+        resumeIO = _cur0.nn
         val ec = currentCtx
         rescheduleFiber(ec, this)
         return
@@ -261,7 +261,7 @@ private final class IOFiber[A](
             pushTracingEvent(cur.event)
           }
 
-          var error: Throwable = null
+          var error: Throwable | Null = null
           val r =
             try cur.thunk()
             catch {
@@ -273,7 +273,7 @@ private final class IOFiber[A](
 
           val next =
             if (error == null) succeeded(r, 0)
-            else failed(error, 0)
+            else failed(error.nn, 0)
 
           runLoop(next, nextCancelation, nextAutoCede)
 
@@ -305,8 +305,8 @@ private final class IOFiber[A](
           val ioe = cur.ioe
           val f = cur.f
 
-          def next(v: Any): IO[Any] = {
-            var error: Throwable = null
+          def next(v: Any): IO[Any] | Null = {
+            var error: Throwable | Null = null
             val result =
               try f(v)
               catch {
@@ -316,7 +316,7 @@ private final class IOFiber[A](
                   onFatalFailure(t)
               }
 
-            if (error == null) succeeded(result, 0) else failed(error, 0)
+            if (error == null) succeeded(result, 0) else failed(error.nn, 0)
           }
 
           (ioe.tag: @switch) match {
@@ -336,7 +336,7 @@ private final class IOFiber[A](
               }
 
               // this code is inlined in order to avoid two `try` blocks
-              var error: Throwable = null
+              var error: Throwable | Null = null
               val result =
                 try f(delay.thunk())
                 catch {
@@ -346,7 +346,7 @@ private final class IOFiber[A](
                     onFatalFailure(t)
                 }
 
-              val nextIO = if (error == null) succeeded(result, 0) else failed(error, 0)
+              val nextIO = if (error == null) succeeded(result, 0) else failed(error.nn, 0)
               runLoop(nextIO, nextCancelation - 1, nextAutoCede)
 
             case 3 =>
@@ -377,7 +377,7 @@ private final class IOFiber[A](
           val ioe = cur.ioe
           val f = cur.f
 
-          def next(v: Any): IO[Any] =
+          def next(v: Any): IO[Any] | Null =
             try f(v)
             catch {
               case NonFatal(t) =>
@@ -458,7 +458,7 @@ private final class IOFiber[A](
               }
 
               // this code is inlined in order to avoid two `try` blocks
-              var error: Throwable = null
+              var error: Throwable | Null = null
               val result =
                 try delay.thunk()
                 catch {
@@ -936,7 +936,7 @@ private final class IOFiber[A](
           /* we know we're on the JVM here */
 
           if (isStackTracing) {
-            pushTracingEvent(cur.event)
+            pushTracingEvent(cur.event.nn)
           }
 
           if (cur.hint eq IOFiber.TypeBlocking) {
@@ -944,7 +944,7 @@ private final class IOFiber[A](
             if (ec.isInstanceOf[WorkStealingThreadPool]) {
               val wstp = ec.asInstanceOf[WorkStealingThreadPool]
               if (wstp.canExecuteBlockingCode()) {
-                var error: Throwable = null
+                var error: Throwable | Null = null
                 val r =
                   try {
                     scala.concurrent.blocking(cur.thunk())
@@ -955,7 +955,7 @@ private final class IOFiber[A](
                       onFatalFailure(t)
                   }
 
-                val next = if (error eq null) succeeded(r, 0) else failed(error, 0)
+                val next = if (error eq null) succeeded(r, 0) else failed(error.nn, 0)
                 runLoop(next, nextCancelation, nextAutoCede)
               } else {
                 blockingFallback(cur)
@@ -975,7 +975,7 @@ private final class IOFiber[A](
           runLoop(succeeded(value, 0), nextCancelation, nextAutoCede)
 
         case 23 =>
-          runLoop(succeeded(Trace(tracingEvents), 0), nextCancelation, nextAutoCede)
+          runLoop(succeeded(Trace(tracingEvents.nn), 0), nextCancelation, nextAutoCede)
       }
     }
   }
@@ -1017,18 +1017,18 @@ private final class IOFiber[A](
     masks = 0
 
     resumeTag = DoneR
-    resumeIO = null
+    resumeIO = null.asInstanceOf[IO[Any]]
     suspended.set(false)
 
     /* clear out literally everything to avoid any possible memory leaks */
 
-    conts = null
+    conts = null.asInstanceOf[ByteStack]
     objectState.invalidate()
     finalizers.invalidate()
-    currentCtx = null
+    currentCtx = null.asInstanceOf[ExecutionContext]
 
     if (isStackTracing) {
-      tracingEvents.invalidate()
+      tracingEvents.nn.invalidate()
     }
   }
 
@@ -1036,7 +1036,8 @@ private final class IOFiber[A](
    * Overwrites the whole execution state of the fiber and prepares for executing finalizers
    * because cancelation has been triggered.
    */
-  private[this] def prepareFiberForCancelation(cb: Either[Throwable, Unit] => Unit): IO[Any] = {
+  private[this] def prepareFiberForCancelation(
+      cb: (Either[Throwable, Unit] => Unit) | Null): IO[Any] = {
     if (!finalizers.isEmpty()) {
       if (!finalizing) {
         // Do not nuke the fiber execution state repeatedly.
@@ -1114,7 +1115,8 @@ private final class IOFiber[A](
   }
 
   /* can return null, meaning that no CallbackStack needs to be later invalidated */
-  private[this] def registerListener(listener: OutcomeIO[A] => Unit): CallbackStack[A] = {
+  private[this] def registerListener(
+      listener: OutcomeIO[A] => Unit): CallbackStack[A] | Null = {
     if (outcome == null) {
       val back = callbacks.push(listener)
 
@@ -1133,12 +1135,12 @@ private final class IOFiber[A](
   }
 
   @tailrec
-  private[this] def succeeded(result: Any, depth: Int): IO[Any] =
+  private[this] def succeeded(result: Any, depth: Int): IO[Any] | Null =
     (ByteStack.pop(conts): @switch) match {
       case 0 => // mapK
         val f = objectState.pop().asInstanceOf[Any => Any]
 
-        var error: Throwable = null
+        var error: Throwable | Null = null
 
         val transformed =
           try f(result)
@@ -1151,10 +1153,10 @@ private final class IOFiber[A](
 
         if (depth > MaxStackDepth) {
           if (error == null) IO.Pure(transformed)
-          else IO.Error(error)
+          else IO.Error(error.nn)
         } else {
           if (error == null) succeeded(transformed, depth + 1)
-          else failed(error, depth + 1)
+          else failed(error.nn, depth + 1)
         }
 
       case 1 => // flatMapK
@@ -1193,7 +1195,7 @@ private final class IOFiber[A](
         succeeded(Right(result), depth)
     }
 
-  private[this] def failed(error: Throwable, depth: Int): IO[Any] = {
+  private[this] def failed(error: Throwable, depth: Int): IO[Any] | Null = {
     Tracing.augmentThrowable(runtime.enhancedExceptions, error, tracingEvents)
 
     // println(s"<$name> failed() with $error")
@@ -1306,7 +1308,7 @@ private final class IOFiber[A](
       finalizers.init(16)
 
       val io = resumeIO
-      resumeIO = null
+      resumeIO = null.asInstanceOf[IO[Any]]
       runLoop(io, runtime.cancelationCheckThreshold, runtime.autoYieldThreshold)
     }
   }
@@ -1333,9 +1335,9 @@ private final class IOFiber[A](
   }
 
   private[this] def blockingR(): Unit = {
-    var error: Throwable = null
+    var error: Throwable | Null = null
     val cur = resumeIO.asInstanceOf[Blocking[Any]]
-    resumeIO = null
+    resumeIO = null.asInstanceOf[IO[Any]]
     val r =
       try cur.thunk()
       catch {
@@ -1355,7 +1357,7 @@ private final class IOFiber[A](
       objectState.push(r.asInstanceOf[AnyRef])
     } else {
       resumeTag = AsyncContinueFailedR
-      objectState.push(error)
+      objectState.push(error.nn)
     }
     val ec = currentCtx
     scheduleOnForeignEC(ec, this)
@@ -1367,7 +1369,7 @@ private final class IOFiber[A](
 
   private[this] def autoCedeR(): Unit = {
     val io = resumeIO
-    resumeIO = null
+    resumeIO = null.asInstanceOf[IO[Any]]
     runLoop(io, runtime.cancelationCheckThreshold, runtime.autoYieldThreshold)
   }
 
@@ -1448,7 +1450,7 @@ private final class IOFiber[A](
 
   private[this] def pushTracingEvent(te: TracingEvent): Unit = {
     if (te ne null) {
-      tracingEvents.push(te)
+      tracingEvents.nn.push(te)
     }
   }
 
@@ -1492,7 +1494,7 @@ private final class IOFiber[A](
     // but we don't worry about those since we are just looking for a single `TraceEvent`
     // which references user-land code
     val opAndCallSite =
-      Tracing.getFrames(tracingEvents).headOption.map(frame => s": $frame").getOrElse("")
+      Tracing.getFrames(tracingEvents.nn).headOption.map(frame => s": $frame").getOrElse("")
 
     s"cats.effect.IOFiber@${System.identityHashCode(this).toHexString} $state$opAndCallSite"
   }
@@ -1500,7 +1502,7 @@ private final class IOFiber[A](
   private[effect] def prettyPrintTrace(): String =
     if (isStackTracing) {
       suspended.get()
-      Tracing.prettyPrint(tracingEvents)
+      Tracing.prettyPrint(tracingEvents.nn)
     } else {
       ""
     }

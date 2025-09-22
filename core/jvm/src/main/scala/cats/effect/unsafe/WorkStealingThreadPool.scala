@@ -154,7 +154,7 @@ private[effect] final class WorkStealingThreadPool(
   private[unsafe] def stealFromOtherWorkerThread(
       dest: Int,
       random: ThreadLocalRandom,
-      destWorker: WorkerThread): IOFiber[_] = {
+      destWorker: WorkerThread): IOFiber[_] | Null = {
     val destQueue = localQueues(dest)
     val from = random.nextInt(threadCount)
 
@@ -570,12 +570,12 @@ private[effect] final class WorkStealingThreadPool(
       // Clear the interrupt flag.
       Thread.interrupted()
 
-      var t: WorkerThread = null
+      var t: WorkerThread | Null = null
       while ({
         t = cachedThreads.pollFirst()
         t ne null
       }) {
-        t.interrupt()
+        t.nn.interrupt()
       }
 
       // Drain the external queue.

@@ -52,7 +52,7 @@ private final class WorkerThread(
     // only avoids unnecessary synchronization, but also avoids notifying other
     // worker threads that new work has become available, even though that's not
     // true in tis case.
-    private[this] var cedeBypass: IOFiber[_],
+    private[this] var cedeBypass: IOFiber[_] | Null,
     // A worker-thread-local weak bag for tracking suspended fibers.
     private[this] var fiberBag: WeakBag[IOFiber[_]],
     // Reference to the `WorkStealingThreadPool` in which this thread operates.
@@ -156,7 +156,7 @@ private final class WorkerThread(
    *   `true` if this worker thread is owned by the provided work stealing thread pool, `false`
    *   otherwise
    */
-  def isOwnedBy(threadPool: WorkStealingThreadPool): Boolean =
+  def isOwnedBy(threadPool: WorkStealingThreadPool | Null): Boolean =
     (pool eq threadPool) && !blocking
 
   /**
@@ -432,7 +432,7 @@ private final class WorkerThread(
               // Permission denied, proceed to park.
               // Set the worker thread parked signal.
               if (isStackTracing) {
-                _active = null
+                _active = null.asInstanceOf[IOFiber[_]]
               }
 
               parked.lazySet(true)
@@ -461,7 +461,7 @@ private final class WorkerThread(
             // Stealing attempt is unsuccessful. Park.
             // Set the worker thread parked signal.
             if (isStackTracing) {
-              _active = null
+              _active = null.asInstanceOf[IOFiber[_]]
             }
 
             parked.lazySet(true)
@@ -653,10 +653,16 @@ private object WorkerThread {
       val queue: LocalQueue,
       val parked: AtomicBoolean,
       val external: ScalQueue[AnyRef],
-      val cedeBypass: IOFiber[_],
+      val cedeBypass: IOFiber[_] | Null,
       val fiberBag: WeakBag[IOFiber[_]]
   )
 
   private[WorkerThread] val NullData: Data =
-    new Data(-1, null, null, null, null, null)
+    new Data(
+      -1,
+      null.asInstanceOf[LocalQueue],
+      null.asInstanceOf[AtomicBoolean],
+      null.asInstanceOf[ScalQueue[AnyRef]],
+      null.asInstanceOf[IOFiber[_]],
+      null.asInstanceOf[WeakBag[IOFiber[_]]])
 }
