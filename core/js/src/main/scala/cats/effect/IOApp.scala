@@ -22,6 +22,7 @@ import scala.concurrent.CancellationException
 import scala.concurrent.duration._
 import scala.scalajs.{js, LinkingInfo}
 import scala.util.Try
+import scala.compiletime.uninitialized
 
 /**
  * The primary entry point to a Cats Effect application. Extend this trait rather than defining
@@ -137,7 +138,7 @@ import scala.util.Try
  */
 trait IOApp {
 
-  private[this] var _runtime: unsafe.IORuntime = null
+  private[this] var _runtime: unsafe.IORuntime = uninitialized
 
   /**
    * The runtime which will be used by `IOApp` to evaluate the [[IO]] produced by the `run`

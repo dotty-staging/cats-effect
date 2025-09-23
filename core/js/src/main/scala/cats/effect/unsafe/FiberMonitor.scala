@@ -48,7 +48,7 @@ private[effect] sealed abstract class FiberMonitor extends FiberMonitorShared {
 private final class ES2021FiberMonitor(
     // A reference to the compute pool of the `IORuntime` in which this suspended fiber bag
     // operates. `null` if the compute pool of the `IORuntime` is not a `FiberAwareExecutionContext`.
-    private[this] val compute: FiberAwareExecutionContext
+    private[this] val compute: FiberAwareExecutionContext | Null
 ) extends FiberMonitor {
   private[this] val bag = new WeakBag[IOFiber[_]]()
 
@@ -57,7 +57,7 @@ private final class ES2021FiberMonitor(
 
   def liveFiberSnapshot(print: String => Unit): Unit =
     Option(compute).foreach { compute =>
-      val queued = compute.liveFibers()
+      val queued = compute.nn.liveFibers()
       val rawForeign = bag.toSet
 
       // We trust the sources of data in the following order, ordered from

@@ -64,7 +64,7 @@ private[unsafe] class ReferenceQueue[T] {
     }
   }
 
-  def poll(): Reference[_ <: T] = {
+  def poll(): Reference[_ <: T] | Null = {
     if (enqueuedRefs.length == 0)
       null
     else

@@ -24,7 +24,7 @@ import scala.scalajs.{js, LinkingInfo}
 
 private[tracing] abstract class TracingPlatform { self: Tracing.type =>
 
-  private[this] val cache = mutable.Map.empty[Any, TracingEvent].withDefaultValue(null)
+  private[this] val cache = mutable.Map.empty[Any, TracingEvent | Null].withDefaultValue(null)
   private[this] val function0Property =
     js.Object.getOwnPropertyNames((() => ()).asInstanceOf[js.Object])(0)
   private[this] val function1Property =
@@ -59,9 +59,9 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
       } else if (isFullStackTracing)
         _ => buildEvent()
       else
-        _ => null
+        _ => null.asInstanceOf[TracingEvent]
     } else
-      _ => null
+      _ => null.asInstanceOf[TracingEvent]
   }
 
   // These filters require properly-configured source maps

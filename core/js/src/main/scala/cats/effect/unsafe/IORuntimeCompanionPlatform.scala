@@ -33,7 +33,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
 
   def defaultScheduler: Scheduler = Scheduler.createDefaultScheduler()._1
 
-  private[this] var _global: IORuntime = null
+  private[this] var _global: IORuntime | Null = null
 
   private[effect] def installGlobal(global: => IORuntime): Boolean = {
     if (_global == null) {
@@ -59,6 +59,6 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       }
     }
 
-    _global
+    _global.nn
   }
 }
