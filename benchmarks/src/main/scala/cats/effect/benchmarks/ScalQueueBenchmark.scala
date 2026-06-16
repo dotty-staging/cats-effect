@@ -73,7 +73,7 @@ class ScalQueueBenchmark {
 
           i = 0
           while (i < batch) {
-            var v: AnyRef = null
+            var v: AnyRef | Null = null
             while (v == null) {
               v = q.poll(random)
             }
@@ -114,7 +114,7 @@ class ScalQueueBenchmark {
 
           i = 0
           while (i < batch) {
-            var v: AnyRef = null
+            var v: AnyRef | Null = null
             while (v == null) {
               v = q.poll()
             }

@@ -217,7 +217,7 @@ private[effect] final class WorkStealingThreadPool[P <: AnyRef](
   private[unsafe] def stealFromOtherWorkerThread(
       dest: Int,
       random: ThreadLocalRandom,
-      destWorker: WorkerThread[P]): Runnable = {
+      destWorker: WorkerThread[P]): Runnable | Null = {
     val destQueue = localQueues(dest)
     val from = random.nextInt(threadCount)
 

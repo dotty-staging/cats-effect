@@ -624,21 +624,21 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   import Resource.ExitCase
 
   ticked("both - propagate the exit case - use successfully, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertCompleteAs(r.both(Resource.unit).use(_ => IO.unit), ())
     assertEquals(got, ExitCase.Succeeded)
   }
 
   ticked("both - propagate the exit case - use successfully, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertCompleteAs(Resource.unit.both(r).use(_ => IO.unit), ())
     assertEquals(got, ExitCase.Succeeded)
   }
 
   ticked("both - propagate the exit case - use errored, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertFailAs(r.both(Resource.unit).use(_ => IO.raiseError(ex)), ex)
@@ -646,7 +646,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("both - propagate the exit case - use errored, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertFailAs(Resource.unit.both(r).use(_ => IO.raiseError(ex)), ex)
@@ -654,7 +654,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("both - propagate the exit case - right errored, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertFailAs(r.both(Resource.eval(IO.sleep(1.second) *> IO.raiseError(ex))).use_, ex)
@@ -662,7 +662,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("both - propagate the exit case - left errored, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertFailAs(Resource.eval(IO.sleep(1.second) *> IO.raiseError(ex)).both(r).use_, ex)
@@ -670,28 +670,28 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("both - propagate the exit case - use canceled, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertSelfCancel(r.both(Resource.unit).use(_ => IO.canceled))
     assertEquals(got, ExitCase.Canceled)
   }
 
   ticked("both - propagate the exit case - use canceled, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertSelfCancel(Resource.unit.both(r).use(_ => IO.canceled))
     assertEquals(got, ExitCase.Canceled)
   }
 
   ticked("both - propagate the exit case - right canceled, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertSelfCancel(r.both(Resource.eval(IO.sleep(1.second) *> IO.canceled)).use_)
     assertEquals(got, ExitCase.Canceled)
   }
 
   ticked("both - propagate the exit case - left canceled, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertSelfCancel(Resource.eval(IO.sleep(1.second) *> IO.canceled).both(r).use_)
     assertEquals(got, ExitCase.Canceled)
@@ -743,14 +743,14 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
   ticked("combineK - propagate the exit case - use successfully, test left") {
     implicit ticker =>
-      var got: ExitCase = null
+      var got: ExitCase = null.asInstanceOf[ExitCase]
       val r = Resource.onFinalizeCase(ec => IO { got = ec })
       assertCompleteAs(r.combineK(Resource.unit).use(_ => IO.unit), ())
       assertEquals(got, ExitCase.Succeeded)
   }
 
   ticked("combineK - propagate the exit case - use errored, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertFailAs(r.combineK(Resource.unit).use(_ => IO.raiseError(ex)), ex)
@@ -758,7 +758,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("combineK - propagate the exit case - left errored, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec }) *>
       Resource.eval(IO.raiseError(ex))
@@ -767,7 +767,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("combineK - propagate the exit case - left errored, test right") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val ex = new Exception
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertCompleteAs(Resource.eval(IO.raiseError(ex)).combineK(r).use_, ())
@@ -776,7 +776,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
   ticked("combineK - propagate the exit case - left errored, use errored, test right") {
     implicit ticker =>
-      var got: ExitCase = null
+      var got: ExitCase = null.asInstanceOf[ExitCase]
       val ex = new Exception
       val r = Resource.onFinalizeCase(ec => IO { got = ec })
       assertFailAs(
@@ -786,7 +786,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
   }
 
   ticked("combineK - propagate the exit case - use canceled, test left") { implicit ticker =>
-    var got: ExitCase = null
+    var got: ExitCase = null.asInstanceOf[ExitCase]
     val r = Resource.onFinalizeCase(ec => IO { got = ec })
     assertSelfCancel(r.combineK(Resource.unit).use(_ => IO.canceled))
     assertEquals(got, ExitCase.Canceled)
@@ -794,7 +794,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
 
   ticked("combineK - propagate the exit case - left errored, use canceled, test right") {
     implicit ticker =>
-      var got: ExitCase = null
+      var got: ExitCase = null.asInstanceOf[ExitCase]
       val r = Resource.onFinalizeCase(ec => IO { got = ec })
       assertSelfCancel(
         Resource.eval(IO.raiseError(new Exception)).combineK(r).use(_ => IO.canceled))
@@ -934,7 +934,7 @@ class ResourceSuite extends BaseScalaCheckSuite with DisciplineSuite {
         var loserClosed = false
         var completed = false
 
-        var results: Either[String, String] = null
+        var results: Either[String, String] = null.asInstanceOf[Either[String, String]]
 
         val winner = Resource
           .make(IO.unit)(_ => IO { winnerClosed = true })

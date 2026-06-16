@@ -55,7 +55,7 @@ class UnsafeUnboundedSuite extends BaseSuite {
     clear()
 
     assertEquals(q.take(), "1")
-    assertEquals(q.take(), null)
+    assertEquals(q.take(), null.asInstanceOf[String])
     assertEquals(q.take(), "3")
   }
 

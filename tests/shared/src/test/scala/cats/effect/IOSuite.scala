@@ -413,7 +413,9 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
 
   ticked("result in an NPE if deferring a null IO") { implicit ticker =>
     assertCompleteAs(
-      IO.defer(null).attempt.map(_.left.toOption.get.isInstanceOf[NullPointerException]),
+      IO.defer(null.asInstanceOf[IO[Any]])
+        .attempt
+        .map(_.left.toOption.get.isInstanceOf[NullPointerException]),
       true)
   }
 
@@ -554,7 +556,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   ticked("asyncCheckAttempt - ignore asyncCheckAttempt callback") { implicit ticker =>
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val asyncCheckAttempt = IO.asyncCheckAttempt[Int] { cb0 =>
       IO { cb = cb0 } *> IO.pure(Right(42))
@@ -576,7 +578,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   real("asyncCheckAttempt - ignore asyncCheckAttempt callback real") {
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val test = for {
       latch1 <- Deferred[IO, Unit]
@@ -598,7 +600,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   ticked("asyncCheckAttempt - repeated asyncCheckAttempt callback") { implicit ticker =>
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val asyncCheckAttempt = IO.asyncCheckAttempt[Int] { cb0 =>
       IO { cb = cb0 } *> IO.pure(Left(None))
@@ -622,7 +624,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   real("asyncCheckAttempt - repeated asyncCheckAttempt callback real") {
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val test = for {
       latch1 <- Deferred[IO, Unit]
@@ -698,7 +700,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   ticked("async - repeated async callback") { implicit ticker =>
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val async = IO.async_[Int] { cb0 => cb = cb0 }
 
@@ -720,7 +722,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   real("async - repeated async callback real") {
     case object TestException extends RuntimeException
 
-    var cb: Either[Throwable, Int] => Unit = null
+    var cb: Either[Throwable, Int] => Unit = null.asInstanceOf[Either[Throwable, Int] => Unit]
 
     val test = for {
       latch1 <- Deferred[IO, Unit]
@@ -742,17 +744,21 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
 
   ticked("async - calling async callback with null during registration (ticked)") {
     implicit ticker =>
-      val test = IO.async[Int] { cb => IO(cb(null)).as(None) }.map(_ + 1).attempt.map { e =>
-        assertCompleteAs(
-          IO {
-            e match {
-              case Left(err) => assert(err.isInstanceOf[NullPointerException])
-              case Right(v) => fail(s"Expected Left, got $v")
-            }
-          },
-          ()
-        )
-      }
+      val test = IO
+        .async[Int] { cb => IO(cb(null.asInstanceOf[Either[Throwable, Int]])).as(None) }
+        .map(_ + 1)
+        .attempt
+        .map { e =>
+          assertCompleteAs(
+            IO {
+              e match {
+                case Left(err) => assert(err.isInstanceOf[NullPointerException])
+                case Right(v) => fail(s"Expected Left, got $v")
+              }
+            },
+            ()
+          )
+        }
 
       assertCompleteAs(test, ())
   }
@@ -765,7 +771,7 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
         _ <- IO(ticker.ctx.tickAll())
         cb <- cbp.get
         _ <- IO(ticker.ctx.tickAll())
-        _ <- IO(cb(null))
+        _ <- IO(cb(null.asInstanceOf[Either[Throwable, Int]]))
         e <- fib.joinWithNever.attempt
         _ <- IO {
           e match {
@@ -779,14 +785,17 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   }
 
   real("async - calling async callback with null during registration (real)") {
-    IO.async[Int] { cb => IO(cb(null)).as(None) }.map(_ + 1).attempt.flatMap { e =>
-      IO {
-        e match {
-          case Left(e) => assert(e.isInstanceOf[NullPointerException])
-          case Right(v) => fail(s"Expected Left, got $v")
+    IO.async[Int] { cb => IO(cb(null.asInstanceOf[Either[Throwable, Int]])).as(None) }
+      .map(_ + 1)
+      .attempt
+      .flatMap { e =>
+        IO {
+          e match {
+            case Left(e) => assert(e.isInstanceOf[NullPointerException])
+            case Right(v) => fail(s"Expected Left, got $v")
+          }
         }
       }
-    }
   }
 
   real("async - calling async callback with null after registration (real)") {
@@ -796,7 +805,8 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
       fib <- IO.async[Int] { cb => cbp.complete(cb) *> latch.get.as(None) }.start
       cb <- cbp.get
       _r <- IO.both(
-        latch.complete(()) *> IO.sleep(0.1.second) *> IO(cb(null)),
+        latch.complete(()) *> IO.sleep(0.1.second) *> IO(
+          cb(null.asInstanceOf[Either[Throwable, Int]])),
         fib.joinWithNever.attempt
       )
       (_, r) = _r
@@ -1535,7 +1545,8 @@ class IOSuite extends BaseScalaCheckSuite with DisciplineSuite with IOPlatformSu
   ticked(
     "finalization - ensure async callback is suppressed during suspension of async finalizers") {
     implicit ticker =>
-      var cb: Either[Throwable, Unit] => Unit = null
+      var cb: Either[Throwable, Unit] => Unit =
+        null.asInstanceOf[Either[Throwable, Unit] => Unit]
 
       val subject = IO.async[Unit] { cb0 =>
         IO {

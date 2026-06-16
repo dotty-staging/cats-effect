@@ -20,7 +20,7 @@ import PlatformStatics.VM_MaxArraySize
 import Platform.static
 
 private[effect] final class ArrayStack[A <: AnyRef](
-    private[this] var buffer: Array[AnyRef],
+    private[this] var buffer: Array[AnyRef | Null],
     private[this] var index: Int) {
 
   def this(initBound: Int) =
@@ -83,7 +83,7 @@ private[effect] final class ArrayStack[A <: AnyRef](
         else
           targetLen
 
-      val buffer2 = new Array[AnyRef](resizeLen)
+      val buffer2 = new Array[AnyRef | Null](resizeLen)
       System.arraycopy(buffer, 0, buffer2, 0, len)
       buffer = buffer2
     }

@@ -64,7 +64,7 @@ final class SelectorSystem private (provider: SelectorProvider) extends PollingS
       ready.remove()
 
       var readyOps = 0
-      var error: Throwable = null
+      var error: Throwable | Null = null
       try {
         readyOps = key.readyOps()
         // reset interest in triggered ops
@@ -75,7 +75,7 @@ final class SelectorSystem private (provider: SelectorProvider) extends PollingS
           readyOps = -1 // interest all waiters
       }
 
-      val value = if (error ne null) Left(error) else Right(readyOps)
+      val value = if (error ne null) Left(error.nn) else Right(readyOps)
 
       val callbacks = key.attachment().asInstanceOf[Callbacks]
       val iter = callbacks.iterator()
@@ -317,13 +317,13 @@ object SelectorSystem {
 
   private final class Callbacks {
 
-    private var head: Node = null
-    private var last: Node = null
+    private var head: Node | Null = null
+    private var last: Node | Null = null
 
     def append(interest: Int, callback: Either[Throwable, Int] => Unit): Node = {
       val node = new Node(interest, callback)
       if (last ne null) {
-        last.next = node
+        last.nn.next = node
         node.prev = last
       } else {
         head = node
@@ -338,7 +338,7 @@ object SelectorSystem {
       def hasNext() = _next ne null
 
       def next() = {
-        val next = _next
+        val next = _next.nn
         _next = next.next
         next
       }
@@ -346,16 +346,16 @@ object SelectorSystem {
 
     final class Node(
         var interest: Int,
-        var callback: Either[Throwable, Int] => Unit
+        var callback: (Either[Throwable, Int] => Unit) | Null
     ) {
-      var prev: Node = null
-      var next: Node = null
+      var prev: Node | Null = null
+      var next: Node | Null = null
 
       def remove(): Unit = {
-        if (prev ne null) prev.next = next
+        if (prev ne null) prev.nn.next = next
         else head = next
 
-        if (next ne null) next.prev = prev
+        if (next ne null) next.nn.prev = prev
         else last = prev
       }
 

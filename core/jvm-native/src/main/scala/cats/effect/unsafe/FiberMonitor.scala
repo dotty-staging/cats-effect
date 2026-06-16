@@ -43,7 +43,7 @@ import scala.concurrent.ExecutionContext
 private[effect] sealed class FiberMonitor(
     // A reference to the compute pool of the `IORuntime` in which this suspended fiber bag
     // operates. `null` if the compute pool of the `IORuntime` is not a `WorkStealingThreadPool`.
-    private[this] val compute: WorkStealingThreadPool[?]
+    private[this] val compute: WorkStealingThreadPool[?] | Null
 ) extends FiberMonitorShared {
 
   private[this] final val BagReferences = new WeakList[WeakBag[Runnable]]
@@ -65,18 +65,18 @@ private[effect] sealed class FiberMonitor(
    * @return
    *   a handle for deregistering the fiber on resumption
    */
-  def monitorSuspended(fiber: IOFiber[?]): WeakBag.Handle = {
+  def monitorSuspended(fiber: IOFiber[?] | Null): WeakBag.Handle = {
     val thread = Thread.currentThread()
     if (thread.isInstanceOf[WorkerThread[?]]) {
       val worker = thread.asInstanceOf[WorkerThread[?]]
       // Guard against tracking errors when multiple work stealing thread pools exist.
       if (worker.isOwnedBy(compute)) {
-        worker.monitor(fiber)
+        worker.monitor(fiber.nn)
       } else {
-        monitorFallback(fiber)
+        monitorFallback(fiber.nn)
       }
     } else {
-      monitorFallback(fiber)
+      monitorFallback(fiber.nn)
     }
   }
 
@@ -283,7 +283,7 @@ private[effect] sealed class FiberMonitor(
 
 private[effect] final class NoOpFiberMonitor extends FiberMonitor(null) {
   private final val noop: WeakBag.Handle = () => ()
-  override def monitorSuspended(fiber: IOFiber[?]): WeakBag.Handle = noop
+  override def monitorSuspended(fiber: IOFiber[?] | Null): WeakBag.Handle = noop
   override def printLiveFiberSnapshot(print: String => Unit): Unit = {}
 }
 

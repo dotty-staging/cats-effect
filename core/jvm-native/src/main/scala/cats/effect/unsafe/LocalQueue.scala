@@ -265,7 +265,7 @@ private final class LocalQueue extends LocalQueuePadding {
           while (i < SpilloverBatchSize) {
             val idx = index(real + offset)
             val f = buffer(idx)
-            buffer(idx) = null.asInstanceOf[IOFiber[_]]
+            buffer(idx) = null.asInstanceOf[Runnable]
             batch(i) = f
             i += 1
             offset += 1
@@ -376,7 +376,7 @@ private final class LocalQueue extends LocalQueuePadding {
     // loop is to return in the if statement. However, `while` loops evaluate
     // to `Unit` in Scala, which does not match the return type of the method,
     // so **something** has to be returned.
-    null.asInstanceOf[IOFiber[_]]
+    null.asInstanceOf[Runnable]
   }
 
   /**
@@ -400,7 +400,7 @@ private final class LocalQueue extends LocalQueuePadding {
    *   the fiber at the head of the queue, or `null` if the queue is empty (in order to avoid
    *   unnecessary allocations)
    */
-  def dequeue(worker: WorkerThread[?]): Runnable = {
+  def dequeue(worker: WorkerThread[?]): Runnable | Null = {
     // A plain, unsynchronized load of the tail of the local queue.
     val tl = tail
 
@@ -437,7 +437,7 @@ private final class LocalQueue extends LocalQueuePadding {
       if (Head.updater.compareAndSet(this, hd, newHd)) {
         // The head has been successfully moved forward and the fiber secured.
         // Proceed to null out the reference to the fiber and return it.
-        buffer(idx) = null.asInstanceOf[IOFiber[_]]
+        buffer(idx) = null.asInstanceOf[Runnable]
         return fiber
       }
 
@@ -484,7 +484,7 @@ private final class LocalQueue extends LocalQueuePadding {
    *   a reference to the first fiber to be executed by the stealing [[WorkerThread]], or `null`
    *   if the stealing was unsuccessful
    */
-  def stealInto(dst: LocalQueue, dstWorker: WorkerThread[?]): Runnable = {
+  def stealInto(dst: LocalQueue, dstWorker: WorkerThread[?]): Runnable | Null = {
     // A plain, unsynchronized load of the tail of the destination queue, owned
     // by the executing thread.
     val dstTl = dst.tail
@@ -556,7 +556,7 @@ private final class LocalQueue extends LocalQueuePadding {
         // executed directly.
         val headFiberIdx = index(steal)
         val headFiber = buffer(headFiberIdx)
-        buffer(headFiberIdx) = null.asInstanceOf[IOFiber[_]]
+        buffer(headFiberIdx) = null.asInstanceOf[Runnable]
 
         if (isStackTracing) {
           dstWorker.active = headFiber
@@ -570,7 +570,7 @@ private final class LocalQueue extends LocalQueuePadding {
           val srcIdx = index(sourcePos + i)
           val dstIdx = index(dstTl + i)
           val fiber = buffer(srcIdx)
-          buffer(srcIdx) = null.asInstanceOf[IOFiber[_]]
+          buffer(srcIdx) = null.asInstanceOf[Runnable]
           dstBuffer(dstIdx) = fiber
           i += 1
         }
@@ -691,7 +691,7 @@ private final class LocalQueue extends LocalQueuePadding {
         while (i < SpilloverBatchSize) {
           val idx = index(real + i)
           val f = buffer(idx)
-          buffer(idx) = null.asInstanceOf[IOFiber[_]]
+          buffer(idx) = null.asInstanceOf[Runnable]
           batch(i) = f
           i += 1
         }
@@ -830,7 +830,7 @@ private final class LocalQueue extends LocalQueuePadding {
   def snapshot(): Set[Runnable] = {
     // load fence to get a more recent snapshot of the enqueued fibers
     val _ = size()
-    buffer.toSet - null.asInstanceOf[IOFiber[_]]
+    buffer.toSet - null.asInstanceOf[Runnable]
   }
 
   /*

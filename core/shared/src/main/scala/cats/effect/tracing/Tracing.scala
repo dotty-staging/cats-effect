@@ -79,7 +79,7 @@ private[effect] object Tracing extends TracingPlatform {
   }
 
   @static private[this] def getOpAndCallSite(
-      stackTrace: Array[StackTraceElement]): StackTraceElement = {
+      stackTrace: Array[StackTraceElement]): StackTraceElement | Null = {
     val len = stackTrace.length
     var idx = 1
     while (idx < len) {
@@ -104,7 +104,7 @@ private[effect] object Tracing extends TracingPlatform {
   @static def augmentThrowable(
       enhancedExceptions: Boolean,
       t: Throwable,
-      events: RingBuffer): Unit = {
+      events: RingBuffer | Null): Unit = {
     def applyRunLoopFilter(ste: StackTraceElement): Boolean = {
       val name = ste.getClassName
       var i = 0

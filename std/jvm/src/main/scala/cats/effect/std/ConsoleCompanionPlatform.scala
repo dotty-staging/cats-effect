@@ -49,7 +49,7 @@ private[std] trait ConsoleCompanionPlatform extends ConsoleCompanionCrossPlatfor
 
     private final class ReadLineRequest(
         val charset: Charset,
-        @volatile var callback: Either[Throwable, String] => Unit
+        @volatile var callback: (Either[Throwable, String] => Unit) | Null
     ) extends Runnable {
       def run() = callback = null
     }
@@ -69,26 +69,26 @@ private[std] trait ConsoleCompanionPlatform extends ConsoleCompanionCrossPlatfor
     start()
 
     override def run(): Unit = {
-      var request: ReadLineRequest = null
-      var charset: Charset = null
-      var line: Either[Throwable, String] = null
+      var request: ReadLineRequest | Null = null
+      var charset: Charset | Null = null
+      var line: Either[Throwable, String] | Null = null
 
       while (true) {
         // wait for a non-canceled request. store callback b/c it is volatile read
-        var callback: Either[Throwable, String] => Unit = null
-        while ((request eq null) || { callback = request.callback; callback eq null })
+        var callback: (Either[Throwable, String] => Unit) | Null = null
+        while ((request eq null) || { callback = request.nn.callback; callback eq null })
           request = requests.take()
 
         if (line eq null) { // need a line for current request
-          charset = request.charset // remember the charset we used
-          line = Either.catchNonFatal(readLineWithCharsetImpl(charset))
+          charset = request.nn.charset // remember the charset we used
+          line = Either.catchNonFatal(readLineWithCharsetImpl(charset.nn))
           // we just blocked, so loop to possibly freshen current request
         } else { // we have a request and a line!
-          if (request.charset != charset) { // not the charset we have :/
-            callback(Left(new IllegalStateException(s"Next read must be for $charset line")))
+          if (request.nn.charset != charset) { // not the charset we have :/
+            callback.nn(Left(new IllegalStateException(s"Next read must be for $charset line")))
             request = null // loop to get a new request that can handle this charset
           } else { // happy days!
-            callback(line)
+            callback.nn(line.nn)
             // reset our state
             request = null
             charset = null

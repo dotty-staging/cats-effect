@@ -23,7 +23,13 @@ class IORuntimeSuite extends BaseSuite {
   testUnit("cleanup allRuntimes collection on shutdown") {
     val (defaultScheduler, closeScheduler) = Scheduler.createDefaultScheduler()
 
-    val runtime = IORuntime(null, null, defaultScheduler, closeScheduler, IORuntimeConfig())
+    val runtime = IORuntime(
+      null.asInstanceOf[scala.concurrent.ExecutionContext],
+      null.asInstanceOf[scala.concurrent.ExecutionContext],
+      defaultScheduler,
+      closeScheduler,
+      IORuntimeConfig()
+    )
 
     assertEquals(IORuntime.allRuntimes.unsafeHashtable().find(_ == runtime), Some(runtime))
 

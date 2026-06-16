@@ -237,7 +237,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
    *   `true` if this worker thread is owned by the provided work stealing thread pool, `false`
    *   otherwise
    */
-  def isOwnedBy(threadPool: WorkStealingThreadPool[?]): Boolean =
+  def isOwnedBy(threadPool: WorkStealingThreadPool[?] | Null): Boolean =
     (pool eq threadPool) && !blocking
 
   /**
@@ -408,7 +408,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
             // Permission denied, proceed to park.
             // Set the worker thread parked signal.
             if (isStackTracing) {
-              _active = null
+              _active = null.asInstanceOf[Runnable]
             }
 
             val needsPoll = system.needsPoll(_poller)
@@ -455,7 +455,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
           // Stealing attempt is unsuccessful. Park.
           // Set the worker thread parked signal.
           if (isStackTracing) {
-            _active = null
+            _active = null.asInstanceOf[Runnable]
           }
 
           val needsPoll = system.needsPoll(_poller)
@@ -559,7 +559,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
           // Stealing attempt is unsuccessful. Park.
           // Set the worker thread parked signal.
           if (isStackTracing) {
-            _active = null
+            _active = null.asInstanceOf[Runnable]
           }
 
           val needsPoll = system.needsPoll(_poller)
@@ -790,14 +790,14 @@ private[effect] final class WorkerThread[P <: AnyRef](
         // First of all, remove the references to data structures of the core
         // pool because they have already been transferred to another thread
         // which took the place of this one.
-        queue = null
-        sleepers = null
-        parked = null
-        fiberBag = null
-        _active = null
+        queue = null.asInstanceOf[LocalQueue]
+        sleepers = null.asInstanceOf[TimerHeap]
+        parked = null.asInstanceOf[AtomicReference[ParkedSignal]]
+        fiberBag = null.asInstanceOf[WeakBag[Runnable]]
+        _active = null.asInstanceOf[Runnable]
         _poller = null.asInstanceOf[P]
-        metrics = null
-        transferState = null
+        metrics = null.asInstanceOf[Metrics]
+        transferState = null.asInstanceOf[TransferState]
 
         try {
           // Try to transfer this thread via the cached threads data structure, to be picked up
@@ -927,7 +927,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
         } else {
           // Fetch and null out the queue bypass reference.
           val f = cedeBypass
-          cedeBypass = null
+          cedeBypass = null.asInstanceOf[Runnable]
           f
         }
         if (fiber ne null) {
@@ -1002,7 +1002,7 @@ private[effect] final class WorkerThread[P <: AnyRef](
       val bypass = cedeBypass
       if (bypass ne null) {
         queue.enqueue(bypass, external, random)
-        cedeBypass = null
+        cedeBypass = null.asInstanceOf[Runnable]
       }
 
       // Logically become a blocking thread.

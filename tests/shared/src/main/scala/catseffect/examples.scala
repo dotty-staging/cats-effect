@@ -64,7 +64,7 @@ package examples {
   object FatalErrorShutsDownRt extends RawApp {
     def main(args: Array[String]): Unit = {
       val rt = cats.effect.unsafe.IORuntime.global
-      @volatile var thread: Thread = null
+      @volatile var thread: Thread | Null = null
       val action = for {
         // make sure a blocking thread exists, save it:
         _ <- IO.blocking {
@@ -86,7 +86,7 @@ package examples {
       Thread.sleep(500L)
       // by now the WSTP (and all its threads) must've been shut down:
       if (thread eq null) println("sadness (thread is null)")
-      else if (thread.isAlive()) println("sadness (thread is alive)")
+      else if (thread.nn.isAlive()) println("sadness (thread is alive)")
       println("done")
     }
   }
@@ -136,7 +136,7 @@ package examples {
 
   object GlobalRacingInit extends IOApp {
 
-    var r: IORuntime = null
+    var r: IORuntime | Null = null
 
     def foo(): Unit = {
       // touch the global runtime to force its initialization
@@ -147,12 +147,12 @@ package examples {
     foo()
 
     def run(args: List[String]): IO[ExitCode] =
-      Console[IO].errorln("boom").whenA(!r.eq(runtime)) >> IO.pure(ExitCode.Success)
+      Console[IO].errorln("boom").whenA(!r.nn.eq(runtime)) >> IO.pure(ExitCode.Success)
   }
 
   object GlobalShutdown extends IOApp {
 
-    var r: IORuntime = null
+    var r: IORuntime | Null = null
 
     def foo(): Unit = {
       // touch the global runtime to force its initialization
@@ -161,10 +161,10 @@ package examples {
     }
 
     foo()
-    r.shutdown()
+    r.nn.shutdown()
 
     def run(args: List[String]): IO[ExitCode] =
-      Console[IO].errorln("boom").whenA(r.eq(runtime)) >> IO.pure(ExitCode.Success)
+      Console[IO].errorln("boom").whenA(r.nn.eq(runtime)) >> IO.pure(ExitCode.Success)
   }
 
   object LiveFiberSnapshot extends IOApp.Simple {

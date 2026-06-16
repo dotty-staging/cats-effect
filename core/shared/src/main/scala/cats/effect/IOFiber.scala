@@ -67,7 +67,7 @@ import Platform.{static, volatileNative}
  */
 private final class IOFiber[A](
     initState: IOLocalState,
-    cb: OutcomeIO[A] => Unit,
+    cb: (OutcomeIO[A] => Unit) | Null,
     startIO: IO[A],
     startEC: ExecutionContext,
     rt: IORuntime
@@ -90,7 +90,7 @@ private final class IOFiber[A](
   private[this] var resumeTag: Byte = ExecR
   private[this] var resumeIO: IO[Any] = startIO
   private[this] val runtime: IORuntime = rt
-  private[this] val tracingEvents: RingBuffer =
+  private[this] val tracingEvents: RingBuffer | Null =
     if (TracingConstants.isStackTracing) RingBuffer.empty(runtime.traceBufferLogSize) else null
 
   /*
@@ -131,7 +131,7 @@ private final class IOFiber[A](
     }
 
     if (TrackFiberContext) {
-      IOFiber.setCurrentIOFiber(null)
+      IOFiber.setCurrentIOFiber(null.asInstanceOf[IOFiber[?]])
     }
   }
 
@@ -967,7 +967,7 @@ private final class IOFiber[A](
                         scheduler
                           .asInstanceOf[WorkStealingThreadPool[?]]
                           .sleepInternal(delay, cb)
-                      IO.Delay(cancel, null)
+                      IO.Delay(cancel, null.asInstanceOf[TracingEvent])
                     } else {
                       val cancel = scheduler.sleep(delay, () => cb(RightUnit))
                       IO(cancel.run())
@@ -1017,7 +1017,7 @@ private final class IOFiber[A](
               if (wstp.canExecuteBlockingCode()) {
                 wstp.prepareForBlocking()
 
-                var error: Throwable = null
+                var error: Throwable | Null = null
                 val r =
                   try {
                     cur.thunk()
@@ -1028,14 +1028,14 @@ private final class IOFiber[A](
                       onFatalFailure(t)
                   }
 
-                val next = if (error eq null) succeeded(r, 0) else failed(error, 0)
+                val next = if (error eq null) succeeded(r, 0) else failed(error.nn, 0)
                 // reset auto-cede counter
                 runLoop(next, nextCancelation, runtime.autoYieldThreshold)
               } else {
                 blockingFallback(cur)
               }
             } else if (isVirtualThread(Thread.currentThread())) {
-              var error: Throwable = null
+              var error: Throwable | Null = null
               val r =
                 try {
                   cur.thunk()
@@ -1046,7 +1046,7 @@ private final class IOFiber[A](
                     onFatalFailure(t)
                 }
 
-              val next = if (error eq null) succeeded(r, 0) else failed(error, 0)
+              val next = if (error eq null) succeeded(r, 0) else failed(error.nn, 0)
               runLoop(next, nextCancelation, nextAutoCede)
             } else {
               blockingFallback(cur)
@@ -1063,7 +1063,7 @@ private final class IOFiber[A](
           runLoop(succeeded(value, 0), nextCancelation, nextAutoCede)
 
         case 23 =>
-          runLoop(succeeded(Trace(tracingEvents), 0), nextCancelation, nextAutoCede)
+          runLoop(succeeded(Trace(tracingEvents.nn), 0), nextCancelation, nextAutoCede)
 
         /* ReadRT */
         case 24 =>
@@ -1115,7 +1115,7 @@ private final class IOFiber[A](
 
     /* clear out literally everything to avoid any possible memory leaks */
 
-    conts = null.asInstanceOf[ByteStack]
+    conts = null.asInstanceOf[ByteStack.T]
     objectState.invalidate()
     finalizers.invalidate()
     currentCtx = null.asInstanceOf[ExecutionContext]
@@ -1140,7 +1140,7 @@ private final class IOFiber[A](
         conts = ByteStack.push(conts, CancelationLoopK)
 
         objectState.init(16)
-        objectState.push(cb)
+        objectState.push(cb.asInstanceOf[AnyRef])
 
         /* suppress all subsequent cancelation on this fiber */
         masks += 1

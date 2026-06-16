@@ -203,8 +203,9 @@ object Supervisor {
                                         // because `cancel` below may wait
                                         // for it; we signal that it is not
                                         // restarted with `null`:
-                                        newCurrent.complete(null) *> fin.guarantee(
-                                          resultR.complete(oc).void)
+                                        newCurrent.complete(
+                                          null.asInstanceOf[Fiber[F, Throwable, A]]) *> fin
+                                          .guarantee(resultR.complete(oc).void)
                                       }
                                     }
                                   }
@@ -321,32 +322,33 @@ object Supervisor {
       await: Boolean,
       checkRestart: Option[Outcome[F, Throwable, ?] => Boolean])(
       implicit F: Concurrent[F]): Resource[F, Supervisor[F]] = {
-    val mkState = F.ref[Map[Unique.Token, Fiber[F, Throwable, ?]]](Map.empty).map { stateRef =>
-      new State[F] {
+    val mkState =
+      F.ref[Map[Unique.Token, Fiber[F, Throwable, ?]] | Null](Map.empty).map { stateRef =>
+        new State[F] {
 
-        def remove(token: Unique.Token): F[Unit] = stateRef.update {
-          case null => null
-          case map => map - token
-        }
-
-        def add(token: Unique.Token, fiber: Fiber[F, Throwable, ?]): F[Boolean] =
-          stateRef.modify {
-            case null => (null, false)
-            case map => (map.updated(token, fiber), true)
+          def remove(token: Unique.Token): F[Unit] = stateRef.update {
+            case null => null
+            case map => map - token
           }
 
-        private[this] val allFibers: F[List[Fiber[F, Throwable, ?]]] = {
-          // we're closing, so we won't need the state any more,
-          // so we're using `null` as a sentinel to reject later
-          // insertions in `add`:
-          stateRef.getAndSet(null).map(_.values.toList)
+          def add(token: Unique.Token, fiber: Fiber[F, Throwable, ?]): F[Boolean] =
+            stateRef.modify {
+              case null => (null, false)
+              case map => (map.updated(token, fiber), true)
+            }
+
+          private[this] val allFibers: F[List[Fiber[F, Throwable, ?]]] = {
+            // we're closing, so we won't need the state any more,
+            // so we're using `null` as a sentinel to reject later
+            // insertions in `add`:
+            stateRef.getAndSet(null).map(_.nn.values.toList)
+          }
+
+          val joinAll: F[Unit] = allFibers.flatMap(_.traverse_(_.join.void))
+
+          val cancelAll: F[Unit] = allFibers.flatMap(_.parUnorderedTraverse(_.cancel).void)
         }
-
-        val joinAll: F[Unit] = allFibers.flatMap(_.traverse_(_.join.void))
-
-        val cancelAll: F[Unit] = allFibers.flatMap(_.parUnorderedTraverse(_.cancel).void)
       }
-    }
 
     supervisor(_ => mkState, await, checkRestart)
   }

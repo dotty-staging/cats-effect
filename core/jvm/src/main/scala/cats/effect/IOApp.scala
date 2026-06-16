@@ -334,7 +334,8 @@ trait IOApp {
    */
   protected def logNonDaemonThreadsInterval: FiniteDuration =
     Option(System.getProperty("cats.effect.logNonDaemonThreads.sleepIntervalMillis"))
-      .flatMap(time => Either.catchOnly[NumberFormatException](time.toLong.millis).toOption)
+      .flatMap(time =>
+        Either.catchOnly[NumberFormatException | Null](time.toLong.millis).toOption)
       .getOrElse(10.seconds)
 
   /**

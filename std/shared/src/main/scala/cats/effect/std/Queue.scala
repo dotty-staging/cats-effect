@@ -1107,7 +1107,7 @@ object Queue {
       val currentHead = loop(-1)
 
       val back = buffer(project(currentHead)).asInstanceOf[A]
-      buffer(project(currentHead)) = null
+      buffer(project(currentHead)) = null.asInstanceOf[AnyRef]
       sequenceBuffer.set(project(currentHead), currentHead + bound)
 
       back
@@ -1159,7 +1159,7 @@ object Queue {
               while (sequenceBuffer.get(offset) != expectedSeq) {}
 
               val value = buffer(offset).asInstanceOf[A]
-              buffer(offset) = null
+              buffer(offset) = null.asInstanceOf[AnyRef]
               sequenceBuffer.set(offset, index + bound)
               back += value
 

@@ -49,7 +49,7 @@ class SleepersSuite extends BaseSuite {
       if (tt == Long.MinValue) acc.reverse
       else {
         val cb = sleepers.pollFirstIfTriggered(now = tt)
-        loop((tt, cb) :: acc)
+        loop((tt, cb.nn) :: acc)
       }
     }
 

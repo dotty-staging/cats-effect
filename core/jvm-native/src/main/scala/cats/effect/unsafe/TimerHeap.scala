@@ -122,7 +122,7 @@ private final class TimerHeap extends AtomicInteger {
   /**
    * for testing
    */
-  def peekFirstQuiescent(): Right[Nothing, Unit] => Unit = {
+  def peekFirstQuiescent(): (Right[Nothing, Unit] => Unit) | Null = {
     if (size > 0) heap(1).get()
     else null
   }
@@ -130,11 +130,11 @@ private final class TimerHeap extends AtomicInteger {
   /**
    * only called by owner thread
    */
-  def pollFirstIfTriggered(now: Long): Right[Nothing, Unit] => Unit = {
+  def pollFirstIfTriggered(now: Long): (Right[Nothing, Unit] => Unit) | Null = {
     val heap = this.heap // local copy
 
     @tailrec
-    def loop(): Right[Nothing, Unit] => Unit = if (size > 0) {
+    def loop(): (Right[Nothing, Unit] => Unit) | Null = if (size > 0) {
       val root = heap(1)
       val rootDeleted = root.isDeleted()
       val rootExpired = !rootDeleted && isExpired(root, now)
@@ -144,7 +144,7 @@ private final class TimerHeap extends AtomicInteger {
           heap(1) = heap(size)
           fixDown(1)
         }
-        heap(size) = null
+        heap(size) = null.asInstanceOf[Node]
         size -= 1
 
         if (root.isCanceled()) {
@@ -177,7 +177,7 @@ private final class TimerHeap extends AtomicInteger {
         if ((node ne null) && isExpired(node, now)) {
           val cb = node.getAndClear()
           val invoked = cb ne null
-          if (invoked) cb(RightUnit)
+          if (invoked) cb.nn(RightUnit)
 
           val leftInvoked = go(heap, size, 2 * m)
           val rightInvoked = go(heap, size, 2 * m + 1)
@@ -219,7 +219,7 @@ private final class TimerHeap extends AtomicInteger {
         } else {
           totalExecuted += 1
           if (rootExpired) {
-            out(0) = root.getAndClear()
+            out(0) = root.getAndClear().asInstanceOf[Right[Nothing, Unit] => Unit]
           }
         }
         val node = new Node(triggerTime, callback, 1)
@@ -332,11 +332,11 @@ private final class TimerHeap extends AtomicInteger {
     back.getAndClear()
     back.index = -1
     if (i == size) {
-      heap(i) = null
+      heap(i) = null.asInstanceOf[Node]
       size -= 1
     } else {
       val last = heap(size)
-      heap(size) = null
+      heap(size) = null.asInstanceOf[Node]
       heap(i) = last
       last.index = i
       size -= 1
@@ -491,21 +491,21 @@ private final class TimerHeap extends AtomicInteger {
   @safePublish
   private final class Node(
       val triggerTime: Long,
-      private[this] var callback: Right[Nothing, Unit] => Unit,
+      private[this] var callback: (Right[Nothing, Unit] => Unit) | Null,
       var index: Int
   ) extends Function0[Unit]
       with Runnable {
 
     private[this] var canceled: Boolean = false
 
-    def getAndClear(): Right[Nothing, Unit] => Unit = {
+    def getAndClear(): (Right[Nothing, Unit] => Unit) | Null = {
       val back = callback
       if (back ne null) // only clear if we read something
         callback = null
       back
     }
 
-    def get(): Right[Nothing, Unit] => Unit = callback
+    def get(): (Right[Nothing, Unit] => Unit) | Null = callback
 
     /**
      * Cancel this timer.

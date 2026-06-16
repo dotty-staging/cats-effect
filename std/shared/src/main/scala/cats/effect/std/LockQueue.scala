@@ -27,7 +27,7 @@ private[effect] object LockQueue {
   final type Cell = AnyRef
 
   // Represents the first cell of the queue.
-  final val EmptyCell: Cell = null
+  final val EmptyCell: Cell = null.asInstanceOf[Cell]
 
   // Represents a waiting cell in the queue.
   final type WaitingCell[F[_]] = Deferred[F, Cell]
