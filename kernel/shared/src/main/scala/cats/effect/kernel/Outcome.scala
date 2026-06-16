@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,20 +40,32 @@ import scala.util.{Either, Left, Right}
  * A commonly asked question is why this wraps a value of type `F[A]` rather than one of type
  * `A`. This is to support monad transformers. Consider
  *
- * ```scala val oc: OutcomeIO[Int] = for { fiber <- Spawn[OptionT[IO, *]].start(OptionT.none[IO,
- * Int]) oc <- fiber.join } yield oc ```
+ * {{{
+ * val oc: OptionT[IO, Outcome[OptionT[IO, *], Throwable, Int]] =
+ *   for {
+ *     fiber <- Spawn[OptionT[IO, *]].start(OptionT.none[IO, Int])
+ *     oc <- fiber.join
+ *   } yield oc
+ * }}}
  *
  * If the fiber succeeds then there is no value of type `Int` to be wrapped in `Succeeded`,
- * hence `Succeeded` contains a value of type `OptionT[IO, Int]` instead.
+ * hence `Succeeded` contains a value of type `OptionT[IO, Int]` instead:
+ *
+ * {{{
+ * def run: IO[Unit] =
+ *   for {
+ *     res <- oc.flatMap(_.embedNever).value // `res` is `Option[Int]` here
+ *     _ <- Console[IO].println(res) // prints "None"
+ *   } yield ()
+ * }}}
  *
  * In general you can assume that binding on the value of type `F[A]` contained in `Succeeded`
  * does not perform further effects. In the case of `IO` that means that the outcome has been
  * constructed as `Outcome.Succeeded(IO.pure(result))`.
  *
- * 2. Errored(e) The fiber exited with an error.
- *
- * 3. Canceled() The fiber was canceled, either externally or self-canceled via
- * `MonadCancel[F]#canceled`.
+ *   2. Errored(e) The fiber exited with an error.
+ *   3. Canceled() The fiber was canceled, either externally or self-canceled via
+ *      `MonadCancel[F]#canceled`.
  */
 sealed trait Outcome[F[_], E, A] extends Product with Serializable {
   import Outcome._
@@ -63,6 +75,17 @@ sealed trait Outcome[F[_], E, A] extends Product with Serializable {
 
   def embedNever(implicit F: GenSpawn[F, E]): F[A] =
     embed(F.never)
+
+  /**
+   * Allows the restoration to a normal development flow from an Outcome.
+   *
+   * This can be useful for storing the state of a running computation and then waiters for that
+   * data can act and continue forward on that shared outcome. Cancelation is encoded as a
+   * `CancellationException`.
+   */
+  def embedError(implicit F: MonadCancel[F, E], ev: Throwable <:< E): F[A] =
+    embed(
+      F.raiseError(ev(new java.util.concurrent.CancellationException("Outcome was Canceled"))))
 
   def fold[B](canceled: => B, errored: E => B, completed: F[A] => B): B =
     this match {
@@ -118,9 +141,9 @@ private[kernel] trait LowPriorityImplicits {
 
   implicit def applicativeError[F[_], E](
       implicit F: Applicative[F]): ApplicativeError[Outcome[F, E, *], E] =
-    new OutcomeApplicativeError[F, E]
+    new OutcomeApplicativeError[F, E]()
 
-  protected class OutcomeApplicativeError[F[_]: Applicative, E]
+  protected class OutcomeApplicativeError[F[_]: Applicative, E]()
       extends ApplicativeError[Outcome[F, E, *], E]
       with Bifunctor[Outcome[F, *, *]] {
 
@@ -194,7 +217,7 @@ object Outcome extends LowPriorityImplicits {
   implicit def monadError[F[_], E](
       implicit F: Monad[F],
       FT: Traverse[F]): MonadError[Outcome[F, E, *], E] =
-    new OutcomeApplicativeError[F, E]()(F) with MonadError[Outcome[F, E, *], E] {
+    new OutcomeApplicativeError[F, E]()(using F) with MonadError[Outcome[F, E, *], E] {
 
       override def map[A, B](fa: Outcome[F, E, A])(f: A => B): Outcome[F, E, B] =
         bimap(fa)(identity, f)
@@ -213,8 +236,8 @@ object Outcome extends LowPriorityImplicits {
         }
 
       @tailrec
-      def tailRecM[A, B](a: A)(f: A => Outcome[F, E, Either[A, B]]): Outcome[F, E, B] =
-        f(a) match {
+      def tailRecM[A, B](a0: A)(f: A => Outcome[F, E, Either[A, B]]): Outcome[F, E, B] =
+        f(a0) match {
           case Succeeded(fa) =>
             Traverse[F].sequence[Either[A, *], B](fa) match { // Dotty can't infer this
               case Left(a) => tailRecM(a)(f)

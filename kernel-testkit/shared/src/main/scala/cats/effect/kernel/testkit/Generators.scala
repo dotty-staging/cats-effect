@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,12 @@ import scala.collection.immutable.SortedMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 
-trait GenK[F[_]] {
+trait GenK[F[_]] extends Serializable {
   def apply[A: Arbitrary: Cogen]: Gen[F[A]]
 }
 
 // Generators for * -> * kinded types
-trait Generators1[F[_]] {
+trait Generators1[F[_]] extends Serializable {
   protected val maxDepth: Int = 10
 
   // todo: uniqueness based on... names, I guess. Have to solve the diamond problem somehow
@@ -40,7 +40,7 @@ trait Generators1[F[_]] {
   // Generators of base cases, with no recursion
   protected def baseGen[A: Arbitrary: Cogen]: List[(String, Gen[F[A]])] = {
     // prevent unused implicit param warnings, the params need to stay because
-    // this method is overriden in subtraits
+    // this method is overridden in subtraits
     val _ = (implicitly[Arbitrary[A]], implicitly[Cogen[A]])
     Nil
   }
@@ -49,7 +49,7 @@ trait Generators1[F[_]] {
   protected def recursiveGen[A: Arbitrary: Cogen](
       deeper: GenK[F]): List[(String, Gen[F[A]])] = {
     // prevent unused params warnings, the params need to stay because
-    // this method is overriden in subtraits
+    // this method is overridden in subtraits
     val _ = (deeper, implicitly[Arbitrary[A]], implicitly[Cogen[A]])
     Nil
   }
@@ -132,8 +132,8 @@ trait ApplicativeErrorGenerators[F[_], E] extends ApplicativeGenerators[F] {
   override protected def recursiveGen[A](
       deeper: GenK[F])(implicit AA: Arbitrary[A], AC: Cogen[A]): List[(String, Gen[F[A]])] =
     List(
-      "handleErrorWith" -> genHandleErrorWith[A](deeper)(AA, AC)
-    ) ++ super.recursiveGen(deeper)(AA, AC)
+      "handleErrorWith" -> genHandleErrorWith[A](deeper)(using AA, AC)
+    ) ++ super.recursiveGen(deeper)(using AA, AC)
 
   private def genRaiseError[A]: Gen[F[A]] =
     arbitrary[E].map(F.raiseError[A](_))
@@ -295,7 +295,7 @@ trait AsyncGenerators[F[_]] extends GenTemporalGenerators[F, Throwable] with Syn
       result <- arbitrary[Either[Throwable, A]]
 
       fo <- deeper[Option[F[Unit]]](
-        Arbitrary(Gen.option[F[Unit]](deeper[Unit])),
+        using Arbitrary(Gen.option[F[Unit]](deeper[Unit])),
         Cogen.cogenOption(cogenFU))
     } yield F
       .async[A](k => F.delay(k(result)) >> fo)
@@ -307,6 +307,28 @@ trait AsyncGenerators[F[_]] extends GenTemporalGenerators[F, Throwable] with Syn
       fa <- deeper[A]
       ec <- arbitraryEC.arbitrary
     } yield F.evalOn(fa, ec)
+}
+
+trait AsyncGeneratorsWithoutEvalShift[F[_]]
+    extends GenTemporalGenerators[F, Throwable]
+    with SyncGenerators[F] {
+  implicit val F: Async[F]
+  implicit protected val cogenFU: Cogen[F[Unit]] = Cogen[Unit].contramap(_ => ())
+
+  override protected def recursiveGen[A: Arbitrary: Cogen](deeper: GenK[F]) =
+    ("async" -> genAsync[A](deeper)) :: super.recursiveGen[A](deeper)
+
+  private def genAsync[A: Arbitrary](deeper: GenK[F]) =
+    for {
+      result <- arbitrary[Either[Throwable, A]]
+
+      fo <- deeper[Option[F[Unit]]](
+        using Arbitrary(Gen.option[F[Unit]](deeper[Unit])),
+        Cogen.cogenOption(cogenFU))
+    } yield F
+      .async[A](k => F.delay(k(result)) >> fo)
+      .flatMap(F.pure(_))
+      .handleErrorWith(F.raiseError(_))
 }
 
 trait ParallelFGenerators {

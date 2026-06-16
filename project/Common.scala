@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,35 @@
 
 import sbt._, Keys._
 
-import scalafix.sbt.ScalafixPlugin.autoImport._
-import sbtspiewak.SpiewakPlugin, SpiewakPlugin.autoImport._
-import sbt.testing.TaskDef
+import de.heikoseeberger.sbtheader.HeaderPlugin.autoImport._
+import org.typelevel.sbt.TypelevelPlugin
+import org.typelevel.sbt.TypelevelKernelPlugin.autoImport._
+import org.typelevel.sbt.TypelevelMimaPlugin.autoImport._
+import scalafix.sbt.ScalafixPlugin, ScalafixPlugin.autoImport._
+import sbtcrossproject.CrossPlugin.autoImport._
+import scalanativecrossproject.NativePlatform
 
 object Common extends AutoPlugin {
 
-  override def requires = plugins.JvmPlugin && SpiewakPlugin
+  override def requires = plugins.JvmPlugin && TypelevelPlugin && ScalafixPlugin
   override def trigger = allRequirements
+
+  override def buildSettings =
+    Seq(
+      semanticdbEnabled := true,
+      semanticdbVersion := scalafixSemanticdb.revision
+    )
 
   override def projectSettings =
     Seq(
-      libraryDependencies ++= {
-        if (isDotty.value)
-          Nil
+      headerLicense := Some(
+        HeaderLicense.ALv2(s"${startYear.value.get}-2025", organizationName.value)
+      ),
+      tlVersionIntroduced ++= {
+        if (crossProjectPlatform.?.value.contains(NativePlatform))
+          List("2.12", "2.13", "3").map(_ -> "3.7.0").toMap
         else
-          Seq(compilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1"))
-      },
-      ThisBuild / scalafixDependencies += "com.github.liancheng" %% "organize-imports" % "0.6.0",
-      ThisBuild / semanticdbEnabled := !isDotty.value,
-      ThisBuild / semanticdbVersion := scalafixSemanticdb.revision
+          Map.empty
+      }
     )
 }

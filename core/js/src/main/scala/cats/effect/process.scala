@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package cats.effect
 
 import cats.data.OptionT
 import cats.effect.std.Env
-import cats.syntax.all._
 
 import scala.scalajs.js
 import scala.util.Try
@@ -37,5 +36,4 @@ private[effect] object process {
     Try(js.Dynamic.global.process.on(eventName, listener).asInstanceOf[Unit]).recover {
       case _ => () // Silently ignore failure
     }.get
-
 }

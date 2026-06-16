@@ -4,16 +4,23 @@
       "getting-started",
       "concepts",
       "tutorial",
-      "migration-guide"
+      "recipes",
+      "faq",
+      "migration-guide",
+      "third-party-resources"
     ],
     "Core Runtime": [
       "core/test-runtime",
+      "core/fiber-dumps",
       "tracing",
       "thread-model",
       "schedulers",
-      "scaling-and-tuning/io-runtime-config",
+      "core/starvation-and-tuning",
+      "core/io-runtime-config",
       "core/native-image",
-      "core/jlink"
+      "core/scala-native",
+      "core/jlink",
+      "core/io-local"
     ],
     "Typeclasses": [
       "typeclasses",
@@ -27,12 +34,18 @@
       "typeclasses/async"
     ],
     "Standard Library": [
+      "std/atomic-cell",
+      "std/backpressure",
+      "std/console",
       "std/countdown-latch",
       "std/cyclic-barrier",
       "std/deferred",
       "std/dequeue",
       "std/dispatcher",
+      "std/env",
       "std/hotswap",
+      "std/mapref",
+      "std/mutex",
       "std/pqueue",
       "std/queue",
       "std/random",
@@ -41,9 +54,6 @@
       "std/semaphore",
       "std/supervisor",
       "std/async-await"
-    ],
-    "Scaling and Tuning":[
-      "scaling-and-tuning/system-properties"
     ]
   }
 }

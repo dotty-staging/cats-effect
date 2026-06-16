@@ -11,41 +11,41 @@
 
 ## Getting Started
 
-- Wired: **3.3.4**
-- Tired: **2.5.4**
+- Wired: **3.7.0**
+- Tired: **2.5.5** (end of life)
 
 ```scala
-libraryDependencies += "org.typelevel" %% "cats-effect" % "3.3.4"
+libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.0"
 ```
 
-The above represents the core, stable dependency which brings in the entirety of Cats Effect. This is *most likely* what you want. All current Cats Effect releases are published for Scala 2.12, 2.13, 3.0, and Scala.js 1.7.
+The above represents the core, stable dependency which brings in the entirety of Cats Effect. This is *most likely* what you want. All current Cats Effect releases are published for Scala 2.12, 2.13, 3.2, and Scala.js 1.13.
 
 Or, if you prefer a less bare-bones starting point, you can try [the Giter8 template](https://github.com/typelevel/ce3.g8):
 
 ```bash
-$ sbt -Dsbt.version=1.5.5 new typelevel/ce3.g8
+$ sbt new typelevel/ce3.g8
 ```
 
 Depending on your use-case, you may want to consider one of the several other modules which are made available within the Cats Effect release. If you're a datatype implementer (like [Monix](https://monix.io)), you probably only want to depend on **kernel** (the typeclasses) in your compile scope and **laws** in your test scope:
 
 ```scala
 libraryDependencies ++= Seq(
-  "org.typelevel" %% "cats-effect-kernel" % "3.3.4",
-  "org.typelevel" %% "cats-effect-laws"   % "3.3.4" % Test)
+  "org.typelevel" %% "cats-effect-kernel" % "3.7.0",
+  "org.typelevel" %% "cats-effect-laws"   % "3.7.0" % Test)
 ```
 
 If you're a middleware framework (like [Fs2](https://fs2.io/)), you probably want to depend on **std**, which gives you access to `Queue`, `Semaphore`, and much more without introducing a hard-dependency on `IO` outside of your tests:
 
 ```scala
 libraryDependencies ++= Seq(
-  "org.typelevel" %% "cats-effect-std" % "3.3.4",
-  "org.typelevel" %% "cats-effect"     % "3.3.4" % Test)
+  "org.typelevel" %% "cats-effect-std" % "3.7.0",
+  "org.typelevel" %% "cats-effect"     % "3.7.0" % Test)
 ```
 
 You may also find some utility in the **testkit** and **kernel-testkit** projects, which contain `TestContext`, generators for `IO`, and a few other things:
 
 ```scala
-libraryDependencies += "org.typelevel" %% "cats-effect-testkit" % "3.3.4" % Test
+libraryDependencies += "org.typelevel" %% "cats-effect-testkit" % "3.7.0" % Test
 ```
 
 Cats Effect provides backward binary compatibility within the 2.x and 3.x version lines, and both forward and backward compatibility within any major/minor line. This is analogous to the versioning scheme used by Cats itself, as well as other major projects such as Scala.js. Thus, any project depending upon Cats Effect 2.2.1 can be used with libraries compiled against Cats Effect 2.0.0 or 2.2.3, but *not* with libraries compiled against 2.3.0 or higher.
@@ -161,7 +161,7 @@ If everything goes well, your browser will open at the end of this.
 ## License
 
 ```
-Copyright 2017-2022 Typelevel
+Copyright 2017-2025 Typelevel
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,7 @@
 
 package cats.effect.std
 
-import cats.effect.kernel.{Concurrent, Ref, Resource}
-import cats.effect.kernel.syntax.all._
+import cats.effect.kernel.{Concurrent, Resource}
 import cats.syntax.all._
 
 /**
@@ -51,6 +50,7 @@ import cats.syntax.all._
  *
  * Ported from https://github.com/typelevel/fs2.
  */
+@deprecated("Use NonEmptyHotswap", "3.7.0")
 sealed trait Hotswap[F[_], R] {
 
   /**
@@ -64,10 +64,19 @@ sealed trait Hotswap[F[_], R] {
    * is not used thereafter. Failure to do so may result in an error on the _consumer_ side. In
    * any case, no resources will be leaked.
    *
+   * For safer access to the current resource see [[get]], which guarantees that it will not be
+   * released while it is being used.
+   *
    * If [[swap]] is called after the lifetime of the [[Hotswap]] is over, it will raise an
    * error, but will ensure that all resources are finalized before returning.
    */
   def swap(next: Resource[F, R]): F[R]
+
+  /**
+   * Gets the current resource, if it exists. The returned resource is guaranteed to be
+   * available for the duration of the returned resource.
+   */
+  def get: Resource[F, Option[R]]
 
   /**
    * Pops and runs the finalizer of the current resource, if it exists.
@@ -85,6 +94,7 @@ object Hotswap {
    * Creates a new [[Hotswap]] initialized with the specified resource. The [[Hotswap]] instance
    * and the initial resource are returned.
    */
+  @deprecated("Use NonEmptyHotswap.apply", "3.7.0")
   def apply[F[_]: Concurrent, R](initial: Resource[F, R]): Resource[F, (Hotswap[F, R], R)] =
     create[F, R].evalMap(hotswap => hotswap.swap(initial).tupleLeft(hotswap))
 
@@ -92,45 +102,19 @@ object Hotswap {
    * Creates a new [[Hotswap]], which represents a [[cats.effect.kernel.Resource]] that can be
    * swapped during the lifetime of this [[Hotswap]].
    */
-  def create[F[_], R](implicit F: Concurrent[F]): Resource[F, Hotswap[F, R]] = {
-    type State = Option[F[Unit]]
-
-    def initialize: F[Ref[F, State]] =
-      F.ref(Some(F.pure(())))
-
-    def finalize(state: Ref[F, State]): F[Unit] =
-      state.getAndSet(None).flatMap {
-        case Some(finalizer) => finalizer
-        case None => raise("Hotswap already finalized")
-      }
-
-    def raise(message: String): F[Unit] =
-      F.raiseError[Unit](new RuntimeException(message))
-
-    Resource.make(initialize)(finalize).map { state =>
+  @deprecated("Use NonEmptyHotswap.empty", "3.7.0")
+  def create[F[_], R](implicit F: Concurrent[F]): Resource[F, Hotswap[F, R]] =
+    NonEmptyHotswap.empty[F, R].map { nes =>
       new Hotswap[F, R] {
+        override def swap(next: Resource[F, R]): F[R] = {
+          // Warning: this leaks the contents of the Resource.
+          // This is done intentionally to satisfy the mistakes of the old API
+          nes.swap(next.map(_.some)) *> get.use(_.get.pure[F])
+        }
 
-        override def swap(next: Resource[F, R]): F[R] =
-          F.uncancelable { poll =>
-            poll(next.allocated).flatMap {
-              case (r, finalizer) =>
-                swapFinalizer(finalizer).as(r)
-            }
-          }
+        override def get: Resource[F, Option[R]] = nes.getOpt
 
-        override def clear: F[Unit] =
-          swapFinalizer(F.unit).uncancelable
-
-        private def swapFinalizer(next: F[Unit]): F[Unit] =
-          state.modify {
-            case Some(previous) =>
-              Some(next) -> previous
-            case None =>
-              None -> (next *> raise("Cannot swap after finalization"))
-          }.flatten
-
+        override def clear: F[Unit] = nes.clear
       }
     }
-  }
-
 }

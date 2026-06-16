@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,25 +20,28 @@ sealed abstract class CI(
     jsEnv: Option[JSEnv],
     testCommands: List[String],
     mimaReport: Boolean,
+    scaladoc: Boolean,
     suffixCommands: List[String]) {
 
-  override val toString: String = {
-    val commands =
-      (List(
-        s"project $rootProject",
-        jsEnv.fold("")(env => s"set Global / useJSEnv := JSEnv.$env"),
-        "headerCheck",
-        "scalafmtSbtCheck",
-        "scalafmtCheck",
-        "javafmtCheck",
-        "clean"
-      ) ++ testCommands ++ List(
-        jsEnv.fold("")(_ => s"set Global / useJSEnv := JSEnv.NodeJS"),
-        if (mimaReport) "mimaReportBinaryIssues" else ""
-      )).filter(_.nonEmpty) ++ suffixCommands
+  val commands: List[String] =
+    (List(
+      s"project $rootProject",
+      jsEnv.fold("")(env => s"set Global / useJSEnv := JSEnv.$env"),
+      "headerCheck",
+      "scalafmtSbtCheck",
+      "scalafmtCheckAll",
+      "javafmtCheckAll",
+      "clean"
+    ) ++ testCommands ++ List(
+      jsEnv.fold("")(_ => s"set Global / useJSEnv := JSEnv.NodeJS"),
+      if (mimaReport) "mimaReportBinaryIssues" else "",
+      if (scaladoc) "doc" else ""
+    )).filter(_.nonEmpty) ++ suffixCommands
 
+  val commandAlias: (String, List[String]) = command -> commands
+
+  override val toString: String =
     commands.mkString("; ", "; ", "")
-  }
 }
 
 object CI {
@@ -49,39 +52,67 @@ object CI {
         jsEnv = None,
         testCommands = List("test"),
         mimaReport = true,
-        suffixCommands = List("root/unidoc", "exampleJVM/compile"))
+        scaladoc = true,
+        suffixCommands = List("root/unidoc", "exampleJVM/compile")
+      )
 
   case object JS
       extends CI(
         command = "ciJS",
         rootProject = "rootJS",
         jsEnv = Some(JSEnv.NodeJS),
-        testCommands = List(
-          "test",
-          "set Global / testJSIOApp := true",
-          "testsJVM/testOnly *.IOAppSpec",
-          "set Global / testJSIOApp := false"),
-        mimaReport = false,
-        suffixCommands = List("exampleJS/compile"))
+        testCommands = List("test"),
+        mimaReport = true,
+        scaladoc = true,
+        suffixCommands = List("exampleJS/compile")
+      )
+
+  case object Native
+      extends CI(
+        command = "ciNative",
+        rootProject = "rootNative",
+        jsEnv = None,
+        testCommands = List("test"),
+        mimaReport = true,
+        scaladoc = true,
+        suffixCommands = List("exampleNative/compile")
+      )
 
   case object Firefox
       extends CI(
         command = "ciFirefox",
         rootProject = "rootJS",
         jsEnv = Some(JSEnv.Firefox),
-        testCommands = List("testOnly *tracing*"),
+        testCommands = List(
+          "testOnly *tracing*",
+          "testOnly *.ConsoleJSSpec",
+          "testOnly *.RandomSpec",
+          "testOnly *.SchedulerSpec",
+          "testOnly *.SecureRandomSpec"
+        ),
         mimaReport = false,
-        suffixCommands = List())
+        scaladoc = false,
+        suffixCommands = List()
+      )
 
   case object Chrome
       extends CI(
         command = "ciChrome",
         rootProject = "rootJS",
         jsEnv = Some(JSEnv.Chrome),
-        testCommands = List("testOnly *tracing*"),
+        testCommands = List(
+          "testOnly *tracing*",
+          "testOnly *tracing*",
+          "testOnly *.ConsoleJSSpec",
+          "testOnly *.RandomSpec",
+          "testOnly *.SchedulerSpec",
+          "testOnly *.SecureRandomSpec"
+        ),
         mimaReport = false,
-        suffixCommands = List())
+        scaladoc = false,
+        suffixCommands = List()
+      )
 
   val AllJSCIs: List[CI] = List(JS, Firefox, Chrome)
-  val AllCIs: List[CI] = JVM :: AllJSCIs
+  val AllCIs: List[CI] = JVM :: Native :: AllJSCIs
 }

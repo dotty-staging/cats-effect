@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import cats.laws.discipline.SemigroupalTests.Isomorphisms
 import org.scalacheck._
 import org.scalacheck.Prop.forAll
 import org.scalacheck.util.Pretty
+import org.typelevel.discipline.Laws
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
@@ -84,7 +85,7 @@ trait AsyncTests[F[_]] extends GenTemporalTests[F, Throwable] with SyncTests[F] 
 
     new RuleSet {
       val name = "async"
-      val bases = Nil
+      val bases: Seq[(String, Laws#RuleSet)] = Nil
       val parents = Seq(
         temporal[A, B, C](
           tolerance,
@@ -194,10 +195,10 @@ trait AsyncTests[F[_]] extends GenTemporalTests[F, Throwable] with SyncTests[F] 
 
     new RuleSet {
       val name = "async"
-      val bases = Nil
+      val bases: Seq[(String, Laws#RuleSet)] = Nil
       val parents = Seq(
         temporal[A, B, C](tolerance)(
-          implicitly[Arbitrary[A]],
+          using implicitly[Arbitrary[A]],
           implicitly[Eq[A]],
           implicitly[Arbitrary[B]],
           implicitly[Eq[B]],
@@ -239,6 +240,12 @@ trait AsyncTests[F[_]] extends GenTemporalTests[F, Throwable] with SyncTests[F] 
       )
 
       val props = Seq(
+        "asyncCheckAttempt immediate is pure" -> forAll(
+          laws.asyncCheckAttemptImmediateIsPure[A] _),
+        "asyncCheckAttempt suspended right is async right" -> forAll(
+          laws.asyncCheckAttemptSuspendedRightIsAsyncRight[A] _),
+        "asyncCheckAttempt suspended left is async left" -> forAll(
+          laws.asyncCheckAttemptSuspendedLeftIsAsyncLeft[A] _),
         "async right is uncancelable sequenced pure" -> forAll(
           laws.asyncRightIsUncancelableSequencedPure[A] _),
         "async left is uncancelable sequenced raiseError" -> forAll(
@@ -254,7 +261,8 @@ trait AsyncTests[F[_]] extends GenTemporalTests[F, Throwable] with SyncTests[F] 
         "evalOn pure identity" -> forAll(laws.evalOnPureIdentity[A] _),
         "evalOn raiseError identity" -> forAll(laws.evalOnRaiseErrorIdentity _),
         "evalOn canceled identity" -> forAll(laws.evalOnCanceledIdentity _),
-        "evalOn never identity" -> forAll(laws.evalOnNeverIdentity _)
+        "evalOn never identity" -> forAll(laws.evalOnNeverIdentity _),
+        "syncStep identity" -> forAll(laws.syncStepIdentity[A] _)
       )
     }
   }

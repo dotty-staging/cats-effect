@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,36 @@
  * limitations under the License.
  */
 
-package cats.effect.tracing
+package cats.effect
+package tracing
 
 import scala.collection.mutable.ArrayBuffer
+
+import Platform.static
+
+private[effect] final class Tracing
 
 private[effect] object Tracing extends TracingPlatform {
 
   import TracingConstants._
 
-  private[this] val TurnRight = "╰"
-  // private[this] val InverseTurnRight = "╭"
-  private[this] val Junction = "├"
-  // private[this] val Line = "│"
+  @static private[this] final val TurnRight = "╰"
+  // private[this] final val InverseTurnRight = "╭"
+  @static private[this] final val Junction = "├"
+  // private[this] final val Line = "│"
 
-  private[tracing] def buildEvent(): TracingEvent = {
+  @static private[tracing] def buildEvent(): TracingEvent = {
     new TracingEvent.StackTrace()
   }
 
-  private[this] final val runLoopFilter: Array[String] =
-    Array("cats.effect.", "scala.runtime.", "scala.scalajs.runtime.")
+  @static private[this] final val runLoopFilter: Array[String] =
+    Array(
+      "cats.effect.",
+      "scala.runtime.",
+      "scala.scalajs.runtime.",
+      "scala.scalanative.runtime.")
 
-  private[tracing] final val stackTraceClassNameFilter: Array[String] = Array(
+  @static private[tracing] final val stackTraceClassNameFilter: Array[String] = Array(
     "cats.",
     "sbt.",
     "java.",
@@ -44,7 +53,7 @@ private[effect] object Tracing extends TracingPlatform {
     "org.scalajs."
   )
 
-  private[tracing] def combineOpAndCallSite(
+  @static private[tracing] def combineOpAndCallSite(
       methodSite: StackTraceElement,
       callSite: StackTraceElement): StackTraceElement = {
     val methodSiteMethodName = methodSite.getMethodName
@@ -58,7 +67,7 @@ private[effect] object Tracing extends TracingPlatform {
     )
   }
 
-  private[tracing] def isInternalClass(className: String): Boolean = {
+  @static private[tracing] def isInternalClass(className: String): Boolean = {
     var i = 0
     val len = stackTraceClassNameFilter.length
     while (i < len) {
@@ -69,8 +78,8 @@ private[effect] object Tracing extends TracingPlatform {
     false
   }
 
-  private[this] def getOpAndCallSite(
-      stackTrace: Array[StackTraceElement]): StackTraceElement | Null = {
+  @static private[this] def getOpAndCallSite(
+      stackTrace: Array[StackTraceElement]): StackTraceElement = {
     val len = stackTrace.length
     var idx = 1
     while (idx < len) {
@@ -79,6 +88,9 @@ private[effect] object Tracing extends TracingPlatform {
       val callSiteClassName = callSite.getClassName
       val callSiteMethodName = callSite.getMethodName
       val callSiteFileName = callSite.getFileName
+
+      if (callSiteClassName == "cats.effect.IOFiber" && callSiteMethodName == "run")
+        return null // short-circuit, effective end of stack
 
       if (!applyStackTraceFilter(callSiteClassName, callSiteMethodName, callSiteFileName))
         return combineOpAndCallSite(methodSite, callSite)
@@ -89,10 +101,10 @@ private[effect] object Tracing extends TracingPlatform {
     null
   }
 
-  def augmentThrowable(
+  @static def augmentThrowable(
       enhancedExceptions: Boolean,
       t: Throwable,
-      events: RingBuffer | Null): Unit = {
+      events: RingBuffer): Unit = {
     def applyRunLoopFilter(ste: StackTraceElement): Boolean = {
       val name = ste.getClassName
       var i = 0
@@ -138,15 +150,15 @@ private[effect] object Tracing extends TracingPlatform {
     }
   }
 
-  def getFrames(events: RingBuffer): List[StackTraceElement] =
+  @static def getFrames(events: RingBuffer): List[StackTraceElement] =
     events
       .toList()
       .collect { case ev: TracingEvent.StackTrace => getOpAndCallSite(ev.getStackTrace) }
       .filter(_ ne null)
       .asInstanceOf[List[StackTraceElement]]
 
-  def prettyPrint(events: RingBuffer): String = {
-    val frames = getFrames(events)
+  @static def prettyPrint(trace: Trace): String = {
+    val frames = trace.toList
 
     frames
       .zipWithIndex
@@ -156,5 +168,13 @@ private[effect] object Tracing extends TracingPlatform {
           s" $junc $frame"
       }
       .mkString(System.lineSeparator())
+  }
+
+  @static def captureTrace(runnable: Runnable): Option[(Runnable, Trace)] = {
+    runnable match {
+      case f: IOFiber[?] if f.isDone => None
+      case f: IOFiber[?] => Some(runnable -> f.captureTrace())
+      case _ => Some(runnable -> Trace(RingBuffer.empty(1)))
+    }
   }
 }

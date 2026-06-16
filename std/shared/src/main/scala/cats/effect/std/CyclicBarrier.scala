@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ abstract class CyclicBarrier[F[_]] { self =>
 }
 
 object CyclicBarrier {
-  def apply[F[_]](capacity: Int)(implicit F: GenConcurrent[F, _]): F[CyclicBarrier[F]] = {
+  def apply[F[_]](capacity: Int)(implicit F: GenConcurrent[F, ?]): F[CyclicBarrier[F]] = {
     if (capacity < 1)
       throw new IllegalArgumentException(
         s"Cyclic barrier constructed with capacity $capacity. Must be > 0")
@@ -66,26 +66,24 @@ object CyclicBarrier {
       new CyclicBarrier[F] {
         val await: F[Unit] =
           F.deferred[Unit].flatMap { gate =>
-            F.uncancelable { poll =>
-              state.modify {
-                case State(awaiting, epoch, unblock) =>
-                  val awaitingNow = awaiting - 1
+            state.flatModifyFull {
+              case (poll, State(awaiting, epoch, unblock)) =>
+                val awaitingNow = awaiting - 1
 
-                  if (awaitingNow == 0)
-                    State(capacity, epoch + 1, gate) -> unblock.complete(()).void
-                  else {
-                    val newState = State(awaitingNow, epoch, unblock)
-                    // reincrement count if this await gets canceled,
-                    // but only if the barrier hasn't reset in the meantime
-                    val cleanup = state.update { s =>
-                      if (s.epoch == epoch) s.copy(awaiting = s.awaiting + 1)
-                      else s
-                    }
-
-                    newState -> poll(unblock.get).onCancel(cleanup)
+                if (awaitingNow == 0)
+                  State(capacity, epoch + 1, gate) -> unblock.complete(()).void
+                else {
+                  val newState = State(awaitingNow, epoch, unblock)
+                  // reincrement count if this await gets canceled,
+                  // but only if the barrier hasn't reset in the meantime
+                  val cleanup = state.update { s =>
+                    if (s.epoch == epoch) s.copy(awaiting = s.awaiting + 1)
+                    else s
                   }
 
-              }.flatten
+                  newState -> poll(unblock.get).onCancel(cleanup)
+                }
+
             }
           }
       }

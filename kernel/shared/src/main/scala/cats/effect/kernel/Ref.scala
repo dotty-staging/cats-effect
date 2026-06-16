@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,12 +19,8 @@ package effect
 package kernel
 
 import cats.data.State
-import cats.effect.kernel.Ref.TransformedRef
+import cats.effect.kernel.Ref.{TransformedRef, TransformedRef2}
 import cats.syntax.all._
-
-import scala.annotation.tailrec
-
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 /**
  * A thread-safe, concurrent mutable reference.
@@ -34,7 +30,15 @@ import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
  * initialised to a value.
  *
  * The default implementation is nonblocking and lightweight, consisting essentially of a purely
- * functional wrapper over an `AtomicReference`.
+ * functional wrapper over an `AtomicReference`. Consequently it ''must not'' be used to store
+ * mutable data as `AtomicReference#compareAndSet` and friends are dependent upon object
+ * reference equality.
+ *
+ * See also `cats.effect.std.AtomicCell` class from `cats-effect-std` for an alternative that
+ * ensures exclusive access and effectual updates.
+ *
+ * If your contents are an immutable `Map[K, V]`, and all your operations are per-key, consider
+ * using `cats.effect.std.MapRef`.
  */
 abstract class Ref[F[_], A] extends RefSource[F, A] with RefSink[F, A] {
 
@@ -61,14 +65,14 @@ abstract class Ref[F[_], A] extends RefSource[F, A] with RefSink[F, A] {
     }
 
   /**
-   * Obtains a snapshot of the current value, and a setter for updating it. The setter may noop
-   * (in which case `false` is returned) if another concurrent call to `access` uses its setter
-   * first.
+   * Obtains a snapshot of the current value, and a setter for updating it.
    *
-   * Once it has noop'd or been used once, a setter never succeeds again.
+   * The setter attempts to modify the contents from the snapshot to the new value (and return
+   * `true`). If it cannot do this (because the contents changed since taking the snapshot), the
+   * setter is a noop and returns `false`.
    *
-   * Satisfies: `r.access.map(_._1) == r.get` `r.access.flatMap { case (v, setter) =>
-   * setter(f(v)) } == r.tryUpdate(f).map(_.isDefined)`
+   * Satisfies: `r.access.map(_._1) == r.get` and `r.access.flatMap { case (v, setter) =>
+   * setter(f(v)) } == r.tryUpdate(f)`.
    */
   def access: F[(A, A => F[Boolean])]
 
@@ -95,16 +99,53 @@ abstract class Ref[F[_], A] extends RefSource[F, A] with RefSink[F, A] {
   def update(f: A => A): F[Unit]
 
   /**
-   * Like `tryModify` but does not complete until the update has been successfully made.
+   * Like `tryModify` but retries until the update has been successfully made.
    */
   def modify[B](f: A => (A, B)): F[B]
 
   /**
-   * Update the value of this ref with a state computation.
+   * Like [[modify]] but schedules resulting effect right after modification.
    *
-   * The current value of this ref is used as the initial state and the computed output state is
-   * stored in this ref after computation completes. If a concurrent modification occurs, `None`
-   * is returned.
+   * Useful for implementing effectful transition of a state machine, in which an effect is
+   * performed based on current state and the state must be updated to reflect that this effect
+   * will be performed.
+   *
+   * Both modification and finalizer are within a single uncancelable region, to prevent
+   * canceled finalizers from leaving the Ref's value permanently out of sync with effects
+   * actually performed. if you need cancellation mechanic in finalizer please see
+   * [[flatModifyFull]].
+   *
+   * @see
+   *   [[modify]]
+   * @see
+   *   [[flatModifyFull]]
+   */
+  def flatModify[B](f: A => (A, F[B]))(implicit F: MonadCancel[F, ?]): F[B] =
+    F.uncancelable(_ => F.flatten(modify(f)))
+
+  /**
+   * Like [[modify]] but schedules resulting effect right after modification.
+   *
+   * Unlike [[flatModify]] finalizer cancellation could be unmasked via supplied `Poll`.
+   * Modification itself is still uncancelable.
+   *
+   * When used as part of a state machine, cancelable regions should usually have an `onCancel`
+   * finalizer to update the state to reflect that the effect will not be performed.
+   *
+   * @see
+   *   [[modify]]
+   * @see
+   *   [[flatModify]]
+   */
+  def flatModifyFull[B](f: (Poll[F], A) => (A, F[B]))(implicit F: MonadCancel[F, ?]): F[B] =
+    F.uncancelable(poll => F.flatten(modify(f(poll, _))))
+
+  /**
+   * Update the value of this `Ref` with a state computation.
+   *
+   * The current value of this `Ref` is used as the initial state and the computed output state
+   * is stored in this `Ref` after computation completes. If a concurrent modification occurs,
+   * `None` is returned.
    */
   def tryModifyState[B](state: State[A, B]): F[Option[B]]
 
@@ -114,10 +155,43 @@ abstract class Ref[F[_], A] extends RefSource[F, A] with RefSink[F, A] {
   def modifyState[B](state: State[A, B]): F[B]
 
   /**
+   * Like [[modifyState]] but schedules resulting effect right after state computation & update.
+   *
+   * Both modification and finalizer are uncancelable, if you need cancellation mechanic in
+   * finalizer please see [[flatModifyStateFull]].
+   *
+   * @see
+   *   [[modifyState]]
+   * @see
+   *   [[flatModifyStateFull]]
+   */
+  def flatModifyState[B](state: State[A, F[B]])(implicit F: MonadCancel[F, ?]): F[B] =
+    F.uncancelable(_ => F.flatten(modifyState(state)))
+
+  /**
+   * Like [[modifyState]] but schedules resulting effect right after modification.
+   *
+   * Unlike [[flatModifyState]] finalizer cancellation could be masked via supplied `Poll[F]`.
+   * Modification itself is still uncancelable.
+   *
+   * @see
+   *   [[modifyState]]
+   * @see
+   *   [[flatModifyState]]
+   */
+  def flatModifyStateFull[B](state: Poll[F] => State[A, F[B]])(
+      implicit F: MonadCancel[F, ?]): F[B] =
+    F.uncancelable(poll => F.flatten(modifyState(state(poll))))
+
+  /**
    * Modify the context `F` using transformation `f`.
    */
-  def mapK[G[_]](f: F ~> G)(implicit F: Functor[F]): Ref[G, A] =
-    new TransformedRef(this, f)
+  def mapK[G[_]](f: F ~> G)(implicit G: Functor[G], dummy: DummyImplicit): Ref[G, A] =
+    new TransformedRef2(this, f)
+
+  @deprecated("Use mapK with Functor[G] constraint", "3.6.0")
+  def mapK[G[_]](f: F ~> G, F: Functor[F]): Ref[G, A] =
+    new TransformedRef(this, f)(F)
 }
 
 object Ref {
@@ -131,7 +205,7 @@ object Ref {
   object Make extends MakeInstances
 
   private[kernel] trait MakeInstances extends MakeLowPriorityInstances {
-    implicit def concurrentInstance[F[_]](implicit F: GenConcurrent[F, _]): Make[F] =
+    implicit def concurrentInstance[F[_]](implicit F: GenConcurrent[F, ?]): Make[F] =
       new Make[F] {
         override def refOf[A](a: A): F[Ref[F, A]] = F.ref(a)
       }
@@ -176,7 +250,12 @@ object Ref {
   def of[F[_], A](a: A)(implicit mk: Make[F]): F[Ref[F, A]] = mk.refOf(a)
 
   /**
-   * Creates a Ref starting with the value of the one in `source`.
+   * Creates a `Ref` with empty content
+   */
+  def empty[F[_]: Make, A: Monoid]: F[Ref[F, A]] = of(Monoid[A].empty)
+
+  /**
+   * Creates a `Ref` starting with the value of the one in `source`.
    *
    * Updates of either of the Refs will not have an effect on the other (assuming A is
    * immutable).
@@ -185,13 +264,13 @@ object Ref {
     ofEffect(source.get)
 
   /**
-   * Creates a Ref starting with the result of the effect `fa`.
+   * Creates a `Ref` starting with the result of the effect `fa`.
    */
   def ofEffect[F[_]: Make: FlatMap, A](fa: F[A]): F[Ref[F, A]] =
     FlatMap[F].flatMap(fa)(of(_))
 
   /**
-   * Like `apply` but returns the newly allocated ref directly instead of wrapping it in
+   * Like `apply` but returns the newly allocated `Ref` directly instead of wrapping it in
    * `F.delay`. This method is considered unsafe because it is not referentially transparent --
    * it allocates mutable state.
    *
@@ -218,7 +297,7 @@ object Ref {
    * }}}
    *
    * Such usage is safe, as long as the class constructor is not accessible and the public one
-   * suspends creation in IO
+   * suspends creation in IO.
    *
    * The recommended alternative is accepting a `Ref[F, A]` as a parameter:
    *
@@ -232,19 +311,18 @@ object Ref {
    *   }
    * }}}
    */
-  def unsafe[F[_], A](a: A)(implicit F: Sync[F]): Ref[F, A] =
-    new SyncRef[F, A](new AtomicReference[A](a))
+  def unsafe[F[_], A](a: A)(implicit F: Sync[F]): Ref[F, A] = new SyncRef(a)
 
   /**
-   * Builds a `Ref` value for data types that are [[Sync]] Like [[of]] but initializes state
+   * Builds a `Ref` value for data types that are [[Sync]] like [[of]] but initializes state
    * using another effect constructor
    */
   def in[F[_], G[_], A](a: A)(implicit F: Sync[F], G: Sync[G]): F[Ref[G, A]] =
     F.delay(unsafe(a))
 
   /**
-   * Creates an instance focused on a component of another Ref's value. Delegates every get and
-   * modification to underlying Ref, so both instances are always in sync.
+   * Creates an instance focused on a component of another `Ref`'s value. Delegates every get
+   * and modification to underlying `Ref`, so both instances are always in sync.
    *
    * Example:
    *
@@ -256,9 +334,17 @@ object Ref {
    *     Ref.lens[IO, Foo, String](refA)(_.bar, (foo: Foo) => (bar: String) => foo.copy(bar = bar))
    * }}}
    */
-  def lens[F[_], A, B <: AnyRef](ref: Ref[F, A])(get: A => B, set: A => B => A)(
-      implicit F: Sync[F]): Ref[F, B] =
+  def lens[F[_], A, B](ref: Ref[F, A])(get: A => B, set: A => B => A)(
+      implicit F: Functor[F]): Ref[F, B] =
     new LensRef[F, A, B](ref)(get, set)
+
+  @deprecated("Signature preserved for bincompat", "3.4.0")
+  def lens[F[_], A, B <: AnyRef](
+      ref: Ref[F, A],
+      get: A => B,
+      set: A => B => A,
+      F: Sync[F]): Ref[F, B] =
+    new LensRef[F, A, B](ref)(get, set)(F)
 
   final class ApplyBuilders[F[_]](val mk: Make[F]) extends AnyVal {
 
@@ -269,91 +355,37 @@ object Ref {
      *   [[Ref.of]]
      */
     def of[A](a: A): F[Ref[F, A]] = mk.refOf(a)
+
+    /**
+     * Creates a thread-safe, concurrent mutable reference initialized to the empty value.
+     *
+     * @see
+     *   [[Ref.empty]]
+     */
+    def empty[A: Monoid]: F[Ref[F, A]] = of(Monoid[A].empty)
   }
 
-  final private class SyncRef[F[_], A](ar: AtomicReference[A])(implicit F: Sync[F])
-      extends Ref[F, A] {
-    def get: F[A] = F.delay(ar.get)
+  final private[kernel] class TransformedRef2[F[_], G[_], A](
+      underlying: Ref[F, A],
+      trans: F ~> G)(
+      implicit G: Functor[G]
+  ) extends Ref[G, A] {
+    override def get: G[A] = trans(underlying.get)
+    override def set(a: A): G[Unit] = trans(underlying.set(a))
+    override def getAndSet(a: A): G[A] = trans(underlying.getAndSet(a))
+    override def tryUpdate(f: A => A): G[Boolean] = trans(underlying.tryUpdate(f))
+    override def tryModify[B](f: A => (A, B)): G[Option[B]] = trans(underlying.tryModify(f))
+    override def update(f: A => A): G[Unit] = trans(underlying.update(f))
+    override def modify[B](f: A => (A, B)): G[B] = trans(underlying.modify(f))
+    override def tryModifyState[B](state: State[A, B]): G[Option[B]] =
+      trans(underlying.tryModifyState(state))
+    override def modifyState[B](state: State[A, B]): G[B] = trans(underlying.modifyState(state))
 
-    def set(a: A): F[Unit] = F.delay(ar.set(a))
-
-    override def getAndSet(a: A): F[A] = F.delay(ar.getAndSet(a))
-
-    override def getAndUpdate(f: A => A): F[A] = {
-      @tailrec
-      def spin: A = {
-        val a = ar.get
-        val u = f(a)
-        if (!ar.compareAndSet(a, u)) spin
-        else a
-      }
-      F.delay(spin)
-    }
-
-    def access: F[(A, A => F[Boolean])] =
-      F.delay {
-        val snapshot = ar.get
-        val hasBeenCalled = new AtomicBoolean(false)
-        def setter =
-          (a: A) =>
-            F.delay(hasBeenCalled.compareAndSet(false, true) && ar.compareAndSet(snapshot, a))
-        (snapshot, setter)
-      }
-
-    def tryUpdate(f: A => A): F[Boolean] =
-      F.map(tryModify(a => (f(a), ())))(_.isDefined)
-
-    def tryModify[B](f: A => (A, B)): F[Option[B]] =
-      F.delay {
-        val c = ar.get
-        val (u, b) = f(c)
-        if (ar.compareAndSet(c, u)) Some(b)
-        else None
-      }
-
-    def update(f: A => A): F[Unit] = {
-      @tailrec
-      def spin(): Unit = {
-        val a = ar.get
-        val u = f(a)
-        if (!ar.compareAndSet(a, u)) spin()
-      }
-      F.delay(spin())
-    }
-
-    override def updateAndGet(f: A => A): F[A] = {
-      @tailrec
-      def spin: A = {
-        val a = ar.get
-        val u = f(a)
-        if (!ar.compareAndSet(a, u)) spin
-        else u
-      }
-      F.delay(spin)
-    }
-
-    def modify[B](f: A => (A, B)): F[B] = {
-      @tailrec
-      def spin: B = {
-        val c = ar.get
-        val (u, b) = f(c)
-        if (!ar.compareAndSet(c, u)) spin
-        else b
-      }
-      F.delay(spin)
-    }
-
-    def tryModifyState[B](state: State[A, B]): F[Option[B]] = {
-      val f = state.runF.value
-      tryModify(a => f(a).value)
-    }
-
-    def modifyState[B](state: State[A, B]): F[B] = {
-      val f = state.runF.value
-      modify(a => f(a).value)
-    }
+    override def access: G[(A, A => G[Boolean])] =
+      G.compose[(A, *)].compose[A => *].map(trans(underlying.access))(trans(_))
   }
 
+  @deprecated("Use TransformedRef2 with Functor[G] constraint", "3.6.0")
   final private[kernel] class TransformedRef[F[_], G[_], A](
       underlying: Ref[F, A],
       trans: F ~> G)(
@@ -374,11 +406,14 @@ object Ref {
       trans(F.compose[(A, *)].compose[A => *].map(underlying.access)(trans(_)))
   }
 
-  final private[kernel] class LensRef[F[_], A, B <: AnyRef](underlying: Ref[F, A])(
+  final private[kernel] class LensRef[F[_], A, B](underlying: Ref[F, A])(
       lensGet: A => B,
       lensSet: A => B => A
-  )(implicit F: Sync[F])
+  )(implicit F: Functor[F])
       extends Ref[F, B] {
+
+    def this(underlying: Ref[F, A], lensGet: A => B, lensSet: A => B => A, F: Sync[F]) =
+      this(underlying)(lensGet, lensSet)(F)
     override def get: F[B] = F.map(underlying.get)(a => lensGet(a))
 
     override def set(b: B): F[Unit] = underlying.update(a => lensModify(a)(_ => b))
@@ -417,23 +452,9 @@ object Ref {
     }
 
     override val access: F[(B, B => F[Boolean])] =
-      F.flatMap(underlying.get) { snapshotA =>
-        val snapshotB = lensGet(snapshotA)
-        val setter = F.delay {
-          val hasBeenCalled = new AtomicBoolean(false)
-
-          (b: B) => {
-            F.flatMap(F.delay(hasBeenCalled.compareAndSet(false, true))) { hasBeenCalled =>
-              F.map(underlying.tryModify { a =>
-                if (hasBeenCalled && (lensGet(a) eq snapshotB))
-                  (lensSet(a)(b), true)
-                else
-                  (a, false)
-              })(_.getOrElse(false))
-            }
-          }
-        }
-        setter.tupleLeft(snapshotB)
+      F.map(underlying.access) {
+        case (a, update) =>
+          (lensGet(a), b => update(lensSet(a)(b)))
       }
 
     private def lensModify(s: A)(f: B => B): A = lensSet(s)(f(lensGet(s)))
@@ -464,7 +485,7 @@ object Ref {
     }
 }
 
-trait RefSource[F[_], A] {
+trait RefSource[F[_], A] extends Serializable {
 
   /**
    * Obtains the current value.
@@ -486,14 +507,12 @@ object RefSource {
     }
 }
 
-trait RefSink[F[_], A] {
+trait RefSink[F[_], A] extends Serializable {
 
   /**
    * Sets the current value to `a`.
    *
    * The returned action completes after the reference has been successfully set.
-   *
-   * Satisfies: `r.set(fa) *> r.get == fa`
    */
   def set(a: A): F[Unit]
 }

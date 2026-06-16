@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,13 +24,13 @@ private[tracing] abstract class TracingPlatform extends ClassValue[TracingEvent]
 
   import TracingConstants._
 
-  override protected def computeValue(cls: Class[_]): TracingEvent = {
+  override protected def computeValue(cls: Class[?]): TracingEvent = {
     buildEvent()
   }
 
   def calculateTracingEvent(key: Any): TracingEvent = {
-    val cls = key.getClass
     if (isCachedStackTracing) {
+      val cls = key.getClass
       get(cls)
     } else if (isFullStackTracing) {
       buildEvent()
@@ -39,7 +39,7 @@ private[tracing] abstract class TracingPlatform extends ClassValue[TracingEvent]
     }
   }
 
-  @nowarn("cat=unused")
+  @nowarn("msg=never used")
   private[tracing] def applyStackTraceFilter(
       callSiteClassName: String,
       callSiteMethodName: String,

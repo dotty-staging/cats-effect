@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,9 +35,6 @@ object PureConcGenerators {
       val cogenE: Cogen[E] = Cogen[E]
 
       val F: GenSpawn[PureConc[E, *], E] = allocateForPureConc[E]
-
-      def cogenCase[A: Cogen]: Cogen[Outcome[PureConc[E, *], E, A]] =
-        OutcomeGenerators.cogenOutcome[PureConc[E, *], E, A]
 
       override def recursiveGen[B: Arbitrary: Cogen](deeper: GenK[PureConc[E, *]]) =
         super

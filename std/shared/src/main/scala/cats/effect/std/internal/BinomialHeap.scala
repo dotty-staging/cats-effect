@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,7 +66,7 @@ private[std] object BinomialHeap {
 
   def apply[A](trees: List[BinomialTree[A]])(implicit ord: Order[A]) =
     new BinomialHeap[A](trees) {
-      implicit val Ord = ord
+      implicit val Ord: Order[A] = ord
     }
 
   /**
@@ -80,7 +80,7 @@ private[std] object BinomialHeap {
       case Nil => tree :: Nil
       case l @ (t :: ts) =>
         if (tree.rank < t.rank)
-          (tree :: l)
+          tree :: l
         else insert(tree.link(t), ts)
     }
 

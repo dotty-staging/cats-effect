@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,10 @@
  * limitations under the License.
  */
 
-package cats.effect.tracing
+package cats.effect
+package tracing
+
+import Platform.static
 
 private[effect] final class RingBuffer private (logSize: Int) {
 
@@ -37,14 +40,17 @@ private[effect] final class RingBuffer private (logSize: Int) {
    */
   def toList(): List[TracingEvent] = {
     var result = List.empty[TracingEvent]
-    val msk = mask
-    val idx = index
-    val start = math.max(idx - length, 0)
-    val end = idx
-    var i = start
-    while (i < end) {
-      result ::= buffer(i & msk)
-      i += 1
+    val buf = buffer
+    if (buf ne null) {
+      val msk = mask
+      val idx = index
+      val start = math.max(idx - length, 0)
+      val end = idx
+      var i = start
+      while (i < end) {
+        result ::= buf(i & msk)
+        i += 1
+      }
     }
     result
   }
@@ -56,6 +62,6 @@ private[effect] final class RingBuffer private (logSize: Int) {
 }
 
 private[effect] object RingBuffer {
-  def empty(logSize: Int): RingBuffer =
+  @static def empty(logSize: Int): RingBuffer =
     new RingBuffer(logSize)
 }

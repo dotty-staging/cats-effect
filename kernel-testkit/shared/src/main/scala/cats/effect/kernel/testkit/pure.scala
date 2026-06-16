@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ object pure {
   }
 
   final case class FiberCtx[E](
-      self: PureFiber[E, _],
+      self: PureFiber[E, ?],
       masks: List[MaskId] = Nil,
       finalizers: List[PureConc[E, Unit]] = Nil)
 
@@ -362,8 +362,10 @@ object pure {
       ft.mapK(fk)
     }
 
+  // todo: MVar is not Serializable, release then update here
   final class PureFiber[E, A](val state0: MVar[Outcome[PureConc[E, *], E, A]])
-      extends Fiber[PureConc[E, *], E, A] {
+      extends Fiber[PureConc[E, *], E, A]
+      with Serializable {
 
     private[this] val state = state0[PureConc[E, *]]
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,12 @@ import cats.arrow.FunctionK
 import cats.data.{EitherT, Ior, IorT, Kleisli, OptionT, WriterT}
 import cats.implicits._
 
+import org.typelevel.scalaccompat.annotation.unused
+
 import scala.annotation.tailrec
 import scala.concurrent.{ExecutionContext, Future}
 
+import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -45,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * {{{async(k)}}} is semantically blocked until the callback is invoked.
  *
- * `async_` is somewhat contrained however. We can't perform any `F[_]` effects in the process
+ * `async_` is somewhat constrained however. We can't perform any `F[_]` effects in the process
  * of registering the callback and we also can't register a finalizer to eg cancel the
  * asynchronous task in the event that the fiber running `async_` is canceled.
  *
@@ -61,22 +64,39 @@ import java.util.concurrent.atomic.AtomicReference
 trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
 
   /**
-   * The asynchronous FFI.
+   * Suspends an asynchronous side effect with optional immediate result in `F`.
    *
-   * `k` takes a callback of type `Either[Throwable, A] => Unit` to signal the result of the
-   * asynchronous computation. The execution of `async(k)` is semantically blocked until the
-   * callback is invoked.
+   * The given function `k` will be invoked during evaluation of `F` to:
+   *   - check if result is already available;
+   *   - "schedule" the asynchronous callback, where the callback of type `Either[Throwable, A]
+   *     \=> Unit` is the parameter passed to that function. Only the ''first'' invocation of
+   *     the callback will be effective! All subsequent invocations will be silently dropped.
    *
-   * `k` returns an `Option[F[Unit]]` which is an optional finalizer to be run in the event that
-   * the fiber running {{{async(k)}}} is canceled.
+   * The process of registering the callback itself is suspended in `F` (the outer `F` of
+   * `F[Either[Option[F[Unit]], A]]`).
+   *
+   * The effect returns `Either[Option[F[Unit]], A]` where:
+   *   - right side `A` is an immediate result of computation (callback invocation will be
+   *     dropped);
+   *   - left side `Option[F[Unit]]` is an optional finalizer to be run in the event that the
+   *     fiber running `asyncCheckAttempt(k)` is canceled.
+   *
+   * Also, note that `asyncCheckAttempt` is uncancelable during its registration.
+   *
+   * @see
+   *   [[async]] for a simplified variant without an option for immediate result
+   * @see
+   *   [[async_]] for a simplified variant without an option for immediate result or finalizer
    */
-  def async[A](k: (Either[Throwable, A] => Unit) => F[Option[F[Unit]]]): F[A] = {
+  def asyncCheckAttempt[A](
+      k: (Either[Throwable, A] => Unit) => F[Either[Option[F[Unit]], A]]): F[A] = {
     val body = new Cont[F, A, A] {
       def apply[G[_]](implicit G: MonadCancel[G, Throwable]) = { (resume, get, lift) =>
         G.uncancelable { poll =>
           lift(k(resume)) flatMap {
-            case Some(fin) => G.onCancel(poll(get), lift(fin))
-            case None => poll(get)
+            case Right(a) => G.pure(a)
+            case Left(Some(fin)) => G.onCancel(poll(get), lift(fin))
+            case Left(None) => get
           }
         }
       }
@@ -86,8 +106,55 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
   }
 
   /**
-   * A convenience version of [[Async.async]] for when we don't need to perform `F[_]` effects
-   * or perform finalization in the event of cancelation.
+   * Suspends an asynchronous side effect in `F`.
+   *
+   * The given function `k` will be invoked during evaluation of the `F` to "schedule" the
+   * asynchronous callback, where the callback of type `Either[Throwable, A] => Unit` is the
+   * parameter passed to that function. Only the ''first'' invocation of the callback will be
+   * effective! All subsequent invocations will be silently dropped.
+   *
+   * The process of registering the callback itself is suspended in `F` (the outer `F` of
+   * `F[Option[F[Unit]]]`).
+   *
+   * The effect returns `Option[F[Unit]]` which is an optional finalizer to be run in the event
+   * that the fiber running `async(k)` is canceled.
+   *
+   * @note
+   *   `async` is always uncancelable during its registration. The created effect will be
+   *   uncancelable during its execution if the registration callback provides no finalizer
+   *   (i.e. evaluates to `None`). If you need the created task to be cancelable, return a
+   *   finalizer effect upon the registration. In a rare case when there's nothing to finalize,
+   *   you can return `Some(F.unit)` for that.
+   *
+   * @see
+   *   [[async_]] for a simplified variant without a finalizer
+   * @see
+   *   [[asyncCheckAttempt]] for more generic version with option of providing immediate result
+   *   of computation
+   */
+  def async[A](k: (Either[Throwable, A] => Unit) => F[Option[F[Unit]]]): F[A] =
+    asyncCheckAttempt[A](cb => map(k(cb))(Left(_)))
+
+  /**
+   * Suspends an asynchronous side effect in `F`.
+   *
+   * The given function `k` will be invoked during evaluation of the `F` to "schedule" the
+   * asynchronous callback, where the callback is the parameter passed to that function. Only
+   * the ''first'' invocation of the callback will be effective! All subsequent invocations will
+   * be silently dropped.
+   *
+   * This function can be thought of as a safer, lexically-constrained version of `Promise`,
+   * where `IO` is like a safer, lazy version of `Future`.
+   *
+   * @note
+   *   `async_` is uncancelable during both its registration and execution. If you need an
+   *   asyncronous effect to be cancelable, consider using `async` instead.
+   *
+   * @see
+   *   [[async]] for more generic version providing a finalizer
+   * @see
+   *   [[asyncCheckAttempt]] for more generic version with option of providing immediate result
+   *   of computation and finalizer
    */
   def async_[A](k: (Either[Throwable, A] => Unit) => Unit): F[A] =
     async[A](cb => as(delay(k(cb)), None))
@@ -98,7 +165,7 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
    * Polymorphic so it can be used in situations where an arbitrary effect is expected eg
    * [[Fiber.joinWithNever]]
    */
-  def never[A]: F[A] = async(_ => pure(none[F[Unit]]))
+  def never[A]: F[A] = async(_ => pure(Some(unit)))
 
   /**
    * Shift execution of the effect `fa` to the execution context `ec`. Execution is shifted back
@@ -109,11 +176,36 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
   def evalOn[A](fa: F[A], ec: ExecutionContext): F[A]
 
   /**
+   * [[Async.evalOn]] with provided [[java.util.concurrent.Executor]]
+   */
+  def evalOnExecutor[A](fa: F[A], executor: Executor): F[A] = {
+    require(executor != null, "Cannot pass null Executor as an argument")
+    executor match {
+      case ec: ExecutionContext =>
+        evalOn[A](fa, ec: ExecutionContext)
+      case executor =>
+        flatMap(executionContext) { refEc =>
+          val newEc: ExecutionContext =
+            ExecutionContext.fromExecutor(executor, refEc.reportFailure)
+          evalOn[A](fa, newEc)
+        }
+    }
+  }
+
+  /**
    * [[Async.evalOn]] as a natural transformation.
    */
   def evalOnK(ec: ExecutionContext): F ~> F =
     new (F ~> F) {
       def apply[A](fa: F[A]): F[A] = evalOn(fa, ec)
+    }
+
+  /**
+   * [[Async.evalOnExecutor]] as a natural transformation.
+   */
+  def evalOnExecutorK(executor: Executor): F ~> F =
+    new (F ~> F) {
+      def apply[A](fa: F[A]): F[A] = evalOnExecutor(fa, executor)
     }
 
   /**
@@ -123,6 +215,14 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
    */
   def startOn[A](fa: F[A], ec: ExecutionContext): F[Fiber[F, Throwable, A]] =
     evalOn(start(fa), ec)
+
+  /**
+   * Start a new fiber on a different executor.
+   *
+   * See [[GenSpawn.start]] for more details.
+   */
+  def startOnExecutor[A](fa: F[A], executor: Executor): F[Fiber[F, Throwable, A]] =
+    evalOnExecutor(start(fa), executor)
 
   /**
    * Start a new background fiber on a different execution context.
@@ -135,27 +235,79 @@ trait Async[F[_]] extends AsyncPlatform[F] with Sync[F] with Temporal[F] {
     Resource.make(startOn(fa, ec))(_.cancel)(this).map(_.join)
 
   /**
+   * Start a new background fiber on a different executor.
+   *
+   * See [[GenSpawn.background]] for more details.
+   */
+  def backgroundOnExecutor[A](
+      fa: F[A],
+      executor: Executor): Resource[F, F[Outcome[F, Throwable, A]]] =
+    Resource.make(startOnExecutor(fa, executor))(_.cancel)(this).map(_.join)
+
+  /**
    * Obtain a reference to the current execution context.
    */
   def executionContext: F[ExecutionContext]
 
   /**
+   * Obtain a reference to the current execution context as a `java.util.concurrent.Executor`.
+   */
+  def executor: F[Executor] = map(executionContext) {
+    case exec: Executor => exec
+    case ec => ec.execute(_)
+  }
+
+  /**
    * Lifts a [[scala.concurrent.Future]] into an `F` effect.
+   *
+   * @see
+   *   [[fromFutureCancelable]] for a cancelable version
    */
   def fromFuture[A](fut: F[Future[A]]): F[A] =
-    flatMap(fut) { f =>
-      flatMap(executionContext) { implicit ec =>
-        async_[A](cb => f.onComplete(t => cb(t.toEither)))
+    flatMap(executionContext) { implicit ec =>
+      uncancelable { poll =>
+        flatMap(poll(fut)) { f => async_[A](cb => f.onComplete(t => cb(t.toEither))) }
       }
     }
+
+  /**
+   * Like [[fromFuture]], but is cancelable via the provided finalizer.
+   */
+  def fromFutureCancelable[A](futCancel: F[(Future[A], F[Unit])]): F[A] =
+    flatMap(executionContext) { implicit ec =>
+      uncancelable { poll =>
+        flatMap(poll(futCancel)) {
+          case (fut, fin) =>
+            onCancel(
+              poll(async[A](cb => as(delay(fut.onComplete(t => cb(t.toEither))), Some(unit)))),
+              fin)
+        }
+      }
+    }
+
+  /**
+   * Translates this `F[A]` into a `G` value which, when evaluated, runs the original `F` to its
+   * completion, the `limit` number of stages, or until the first stage that cannot be expressed
+   * with [[Sync]] (typically an asynchronous boundary).
+   *
+   * Note that `syncStep` is merely a hint to the runtime system; implementations have the
+   * liberty to interpret this method to their liking as long as it obeys the respective laws.
+   * For example, a lawful implementation of this function is `G.pure(Left(fa))`, in which case
+   * the original `F[A]` value is returned unchanged.
+   *
+   * @param limit
+   *   The maximum number of stages to evaluate prior to forcibly yielding to `F`
+   */
+  def syncStep[G[_], A](fa: F[A], @unused limit: Int)(implicit G: Sync[G]): G[Either[F[A], A]] =
+    G.pure(Left(fa))
 
   /*
    * NOTE: This is a very low level api, end users should use `async` instead.
    * See cats.effect.kernel.Cont for more detail.
    *
-   * If you are an implementor, and you have `async`, `Async.defaultCont`
-   * provides an implementation of `cont` in terms of `async`.
-   * Note that if you use `defaultCont` you _have_ to override `async`.
+   * If you are an implementor, and you have `async` or `asyncCheckAttempt`,
+   * `Async.defaultCont` provides an implementation of `cont` in terms of `async`.
+   * Note that if you use `defaultCont` you _have_ to override `async/asyncCheckAttempt`.
    */
   def cont[K, R](body: Cont[F, K, R]): F[R]
 }
@@ -266,10 +418,18 @@ object Async {
     implicit protected def F: Async[F]
 
     override protected final def delegate = super.delegate
-    override protected final def C = F
+    override protected final def C: Clock[F] = F
 
     override def unique: OptionT[F, Unique.Token] =
       delay(new Unique.Token())
+
+    override def syncStep[G[_], A](fa: OptionT[F, A], limit: Int)(
+        implicit G: Sync[G]): G[Either[OptionT[F, A], A]] =
+      G.map(F.syncStep[G, Option[A]](fa.value, limit)) {
+        case Left(foption) => Left(OptionT(foption))
+        case Right(None) => Left(OptionT.none)
+        case Right(Some(a)) => Right(a)
+      }
 
     def cont[K, R](body: Cont[OptionT[F, *], K, R]): OptionT[F, R] =
       OptionT(
@@ -329,10 +489,18 @@ object Async {
     implicit protected def F: Async[F]
 
     override protected final def delegate = super.delegate
-    override protected final def C = F
+    override protected final def C: Clock[F] = F
 
     override def unique: EitherT[F, E, Unique.Token] =
       delay(new Unique.Token())
+
+    override def syncStep[G[_], A](fa: EitherT[F, E, A], limit: Int)(
+        implicit G: Sync[G]): G[Either[EitherT[F, E, A], A]] =
+      G.map(F.syncStep[G, Either[E, A]](fa.value, limit)) {
+        case Left(feither) => Left(EitherT(feither))
+        case Right(Left(e)) => Left(EitherT.leftT(e))
+        case Right(Right(a)) => Right(a)
+      }
 
     def cont[K, R](body: Cont[EitherT[F, E, *], K, R]): EitherT[F, E, R] =
       EitherT(
@@ -393,10 +561,18 @@ object Async {
     implicit protected def F: Async[F]
 
     override protected final def delegate = super.delegate
-    override protected final def C = F
+    override protected final def C: Clock[F] = F
 
     override def unique: IorT[F, L, Unique.Token] =
       delay(new Unique.Token())
+
+    override def syncStep[G[_], A](fa: IorT[F, L, A], limit: Int)(
+        implicit G: Sync[G]): G[Either[IorT[F, L, A], A]] =
+      G.map(F.syncStep[G, Ior[L, A]](fa.value, limit)) {
+        case Left(fior) => Left(IorT(fior))
+        case Right(Ior.Right(a)) => Right(a)
+        case Right(ior) => Left(IorT.fromIor(ior))
+      }
 
     def cont[K, R](body: Cont[IorT[F, L, *], K, R]): IorT[F, L, R] =
       IorT(
@@ -456,10 +632,14 @@ object Async {
     implicit protected def F: Async[F]
 
     override protected final def delegate = super.delegate
-    override protected final def C = F
+    override protected final def C: Clock[F] = F
 
     override def unique: WriterT[F, L, Unique.Token] =
       delay(new Unique.Token())
+
+    override def syncStep[G[_], A](fa: WriterT[F, L, A], limit: Int)(
+        implicit G: Sync[G]): G[Either[WriterT[F, L, A], A]] =
+      G.pure(Left(fa))
 
     def cont[K, R](body: Cont[WriterT[F, L, *], K, R]): WriterT[F, L, R] =
       WriterT(
@@ -520,10 +700,14 @@ object Async {
     implicit protected def F: Async[F]
 
     override protected final def delegate = super.delegate
-    override protected final def C = F
+    override protected final def C: Clock[F] = F
 
     override def unique: Kleisli[F, R, Unique.Token] =
       delay(new Unique.Token())
+
+    override def syncStep[G[_], A](fa: Kleisli[F, R, A], limit: Int)(
+        implicit G: Sync[G]): G[Either[Kleisli[F, R, A], A]] =
+      G.pure(Left(fa))
 
     def cont[K, R2](body: Cont[Kleisli[F, R, *], K, R2]): Kleisli[F, R, R2] =
       Kleisli(r =>

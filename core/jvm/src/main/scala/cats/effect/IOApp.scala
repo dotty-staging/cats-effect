@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,14 @@
 
 package cats.effect
 
+import cats.effect.metrics.{CpuStarvationWarningMetrics, JvmCpuStarvationMetrics}
+import cats.effect.std.Console
 import cats.effect.tracing.TracingConstants._
-import cats.effect.unsafe.FiberMonitor
+import cats.effect.unsafe.UnsafeNonFatal
+import cats.syntax.all._
 
-import scala.concurrent.{blocking, CancellationException}
-import scala.util.control.NonFatal
+import scala.concurrent.{blocking, CancellationException, ExecutionContext}
+import scala.concurrent.duration._
 import scala.compiletime.uninitialized
 
 import java.util.concurrent.{ArrayBlockingQueue, CountDownLatch}
@@ -58,10 +61,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * produce an exit code of 1.
  *
  * Note that exit codes are an implementation-specific feature of the underlying runtime, as are
- * process arguments. Naturally, all JVMs support these functions, as does NodeJS, but some
- * JavaScript execution environments will be unable to replicate these features (or they simply
- * may not make sense). In such cases, exit codes may be ignored and/or argument lists may be
- * empty.
+ * process arguments. Naturally, all JVMs support these functions, as does Node.js and Scala
+ * Native, but some JavaScript execution environments will be unable to replicate these features
+ * (or they simply may not make sense). In such cases, exit codes may be ignored and/or argument
+ * lists may be empty.
  *
  * Note that in the case of the above example, we would actually be better off using
  * [[IOApp.Simple]] rather than `IOApp` directly, since we are neither using `args` nor are we
@@ -164,6 +167,16 @@ trait IOApp {
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
   /**
+   * The [[unsafe.PollingSystem]] used by the [[runtime]] which will evaluate the [[IO]]
+   * produced by `run`. It is very unlikely that users will need to override this method.
+   *
+   * [[unsafe.PollingSystem]] implementors may provide their own flavors of [[IOApp]] that
+   * override this method.
+   */
+  protected def pollingSystem: unsafe.PollingSystem =
+    unsafe.IORuntime.createDefaultPollingSystem()
+
+  /**
    * Controls the number of worker threads which will be allocated to the compute pool in the
    * underlying runtime. In general, this should be no ''greater'' than the number of physical
    * threads made available by the underlying kernel (which can be determined using
@@ -177,13 +190,199 @@ trait IOApp {
    * beyond a few percentage points, and the default value is optimal (or close to optimal) in
    * ''most'' common scenarios.
    *
-   * '''This setting is JVM-specific and will not compile on JavaScript.'''
+   * '''This setting is specific to the JVM and Scala Native, and will not compile on
+   * JavaScript.'''
    *
    * For more details on Cats Effect's runtime threading model please see
    * [[https://typelevel.org/cats-effect/docs/thread-model]].
    */
   protected def computeWorkerThreadCount: Int =
     Math.max(2, Runtime.getRuntime().availableProcessors())
+
+  // arbitrary constant is arbitrary
+  private[this] lazy val queue = new ArrayBlockingQueue[AnyRef](32)
+
+  private[this] def handleTerminalFailure(t: Throwable): Unit = {
+    queue.clear()
+    queue.put(t)
+  }
+
+  /**
+   * Executes the provided actions on the JVM's `main` thread. Note that this is, by definition,
+   * a single-threaded executor, and should not be used for anything which requires a meaningful
+   * amount of performance. Additionally, and also by definition, this process conflicts with
+   * producing the results of an application. If one fiber calls `evalOn(MainThread)` while the
+   * main fiber is returning, the first one will "win" and will cause the second one to wait its
+   * turn. Once the main fiber produces results (or errors, or cancels), any remaining enqueued
+   * actions are ignored and discarded (a mostly irrelevant issue since the process is, at that
+   * point, terminating).
+   *
+   * This is ''not'' recommended for use in most applications, and is really only appropriate
+   * for scenarios where some third-party library is sensitive to the exact identity of the
+   * calling thread (for example, LWJGL). In these scenarios, it is recommended that the
+   * absolute minimum possible amount of work is handed off to the main thread.
+   */
+  protected def MainThread: ExecutionContext =
+    if (queue eq queue)
+      new ExecutionContext {
+        def reportFailure(t: Throwable): Unit =
+          t match {
+            case t if UnsafeNonFatal(t) =>
+              IOApp.this.reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime)
+
+            case t =>
+              handleTerminalFailure(t)
+          }
+
+        def execute(r: Runnable): Unit =
+          if (!queue.offer(r)) {
+            runtime.blocking.execute(() => queue.put(r))
+          }
+      }
+    else
+      throw new UnsupportedOperationException(
+        "Your IOApp's super class has not been recompiled against Cats Effect 3.4.0+."
+      )
+
+  /**
+   * Configures the action to perform when unhandled errors are caught by the runtime. An
+   * unhandled error is an error that is raised (and not handled) on a Fiber that nobody is
+   * joining.
+   *
+   * For example:
+   *
+   * {{{
+   *   import scala.concurrent.duration._
+   *   override def run: IO[Unit] = IO(throw new Exception("")).start *> IO.sleep(1.second)
+   * }}}
+   *
+   * In this case, the exception is raised on a Fiber with no listeners. Nobody would be
+   * notified about that error. Therefore it is unhandled, and it goes through the reportFailure
+   * mechanism.
+   *
+   * By default, `reportFailure` simply delegates to
+   * [[cats.effect.std.Console!.printStackTrace]]. It is safe to perform any `IO` action within
+   * this handler; it will not block the progress of the runtime. With that said, some care
+   * should be taken to avoid raising unhandled errors as a result of handling unhandled errors,
+   * since that will result in the obvious chaos.
+   */
+  protected def reportFailure(err: Throwable): IO[Unit] =
+    Console[IO].printStackTrace(err)
+
+  /**
+   * Configures whether to enable blocked thread detection. This is relatively expensive so is
+   * off by default and probably not something that you want to permanently enable in
+   * production.
+   *
+   * If enabled, the compute pool will attempt to detect when blocking operations have been
+   * erroneously wrapped in `IO.apply` or `IO.delay` instead of `IO.blocking` or
+   * `IO.interruptible` and will report stacktraces of this to stderr.
+   *
+   * This may be of interest if you've been getting warnings about CPU starvation printed to
+   * stderr. [[https://typelevel.org/cats-effect/docs/core/starvation-and-tuning]]
+   *
+   * Can also be configured by setting the `cats.effect.detectBlockedThreads` system property.
+   */
+  protected def blockedThreadDetectionEnabled: Boolean =
+    java.lang.Boolean.getBoolean("cats.effect.detectBlockedThreads") // defaults to disabled
+
+  /**
+   * Controls whether non-daemon threads blocking application exit are logged to stderr when the
+   * `IO` produced by `run` has completed. This mechanism works by starting a daemon thread
+   * which periodically polls all active threads on the system, checking for any remaining
+   * non-daemon threads and enumerating them. This can be very useful for determining why your
+   * application ''isn't'' gracefully exiting, since the alternative is that the JVM will just
+   * hang waiting for the non-daemon threads to terminate themselves. This mechanism will not,
+   * by itself, block shutdown in any way. For this reason, it defaults to `true`.
+   *
+   * In the event that your application exit is being blocked by a non-daemon thread which you
+   * cannot control (i.e. a bug in some dependency), you can circumvent the blockage by
+   * appending the following to the `IO` returned from `run`:
+   *
+   * {{{
+   *   val program: IO[ExitCode] = ???                      // the original IO returned from `run`
+   *   program.guarantee(IO(Runtime.getRuntime().halt(0)))  // the bit you need to add
+   * }}}
+   *
+   * This finalizer will forcibly terminate the JVM (kind of like `kill -9`), ignoring daemon
+   * threads ''and'' shutdown hooks, but only after all native Cats Effect finalizers have
+   * completed. In most cases, this should be a relatively benign thing to do, though it's
+   * definitely a bad default. Only use this to workaround a blocking non-daemon thread that you
+   * cannot otherwise influence!
+   *
+   * Can also be configured by setting the `cats.effect.logNonDaemonThreadsOnExit` system
+   * property.
+   *
+   * @see
+   *   [[logNonDaemonThreadsInterval]]
+   */
+  protected def logNonDaemonThreadsEnabled: Boolean =
+    Option(System.getProperty("cats.effect.logNonDaemonThreadsOnExit"))
+      .map(_.toLowerCase()) match {
+      case Some(value) => value.equalsIgnoreCase("true")
+      case None => true // default to enabled
+    }
+
+  /**
+   * Controls the interval used by the non-daemon thread detector. Defaults to `10.seconds`.
+   *
+   * Can also be configured by setting the `cats.effect.logNonDaemonThreads.sleepIntervalMillis`
+   * system property.
+   *
+   * @see
+   *   [[logNonDaemonThreadsEnabled]]
+   */
+  protected def logNonDaemonThreadsInterval: FiniteDuration =
+    Option(System.getProperty("cats.effect.logNonDaemonThreads.sleepIntervalMillis"))
+      .flatMap(time => Either.catchOnly[NumberFormatException](time.toLong.millis).toOption)
+      .getOrElse(10.seconds)
+
+  /**
+   * Defines what to do when CpuStarvationCheck is triggered. Defaults to log a warning to
+   * System.err.
+   */
+  protected def onCpuStarvationWarn(metrics: CpuStarvationWarningMetrics): IO[Unit] =
+    CpuStarvationCheck.logWarning(metrics)
+
+  /**
+   * Defines what to do when IOApp detects that `main` is being invoked on a `Thread` which
+   * isn't the main process thread. This condition can happen when we are running inside of an
+   * `sbt run` with `fork := false`
+   */
+  def warnOnNonMainThreadDetected: Boolean =
+    Option(System.getProperty("cats.effect.warnOnNonMainThreadDetected"))
+      .map(_.equalsIgnoreCase("true"))
+      .getOrElse(true)
+
+  /**
+   * Attempts to detect whether the given thread is the main thread.
+   */
+  private def isMainThread(thread: Thread): Boolean =
+    thread.getName == "main" &&
+      thread.getThreadGroup.getName == "main" &&
+      thread.getThreadGroup.getParent != null &&
+      thread.getThreadGroup.getParent.getName == "system"
+
+  private def onNonMainThreadDetected(): Unit = {
+    if (warnOnNonMainThreadDetected)
+      System
+        .err
+        .println(
+          """|[WARNING] IOApp `main` is running on a thread other than the main thread.
+             |This may prevent correct resource cleanup after `main` completes.
+             |This condition could be caused by executing `run` in an interactive sbt session with `fork := false`.
+             |To ensure proper cleanup, either
+             |  - set `Compile / run / fork := true` in this project
+             |  - use `fgRun` instead of `run`
+             |  - use 'bgStop` to terminate `run`
+             |  - update sbt to a version after 1.10.5
+             |
+             |To silence this warning set the system property:
+             |`-Dcats.effect.warnOnNonMainThreadDetected=false`.
+             |""".stripMargin
+        )
+    else ()
+  }
 
   /**
    * The entry point for your application. Will be called by the runtime when the process is
@@ -202,48 +401,54 @@ trait IOApp {
   def run(args: List[String]): IO[ExitCode]
 
   final def main(args: Array[String]): Unit = {
-    // checked in openjdk 8-17; this attempts to detect when we're running under artificial environments, like sbt
-    val isForked = Thread.currentThread().getId() == 1
+    val isForked = isMainThread(Thread.currentThread())
+    if (!isForked) onNonMainThreadDetected()
 
-    if (runtime == null) {
+    val installed = if (runtime == null) {
       import unsafe.IORuntime
 
       val installed = IORuntime installGlobal {
-        val (compute, compDown) =
-          IORuntime.createDefaultComputeThreadPool(runtime, threads = computeWorkerThreadCount)
+        val (compute, poller, compDown) =
+          IORuntime.createWorkStealingComputeThreadPool(
+            threads = computeWorkerThreadCount,
+            reportFailure = t => reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime),
+            blockedThreadDetectionEnabled = blockedThreadDetectionEnabled,
+            pollingSystem = pollingSystem,
+            uncaughtExceptionHandler = (_, t) => handleTerminalFailure(t)
+          )
 
         val (blocking, blockDown) =
-          IORuntime.createDefaultBlockingExecutionContext()
-
-        val (scheduler, schedDown) =
-          IORuntime.createDefaultScheduler()
-
-        val fiberMonitor = FiberMonitor(compute)
-
-        val unregisterFiberMonitorMBean = IORuntime.registerFiberMonitorMBean(fiberMonitor)
+          IORuntime.createDefaultBlockingExecutionContext(
+            threadPrefix = "io-blocking",
+            reportFailure =
+              (t: Throwable) => reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime)
+          )
 
         IORuntime(
           compute,
           blocking,
-          scheduler,
-          fiberMonitor,
+          compute,
+          List(poller),
           { () =>
-            unregisterFiberMonitorMBean()
             compDown()
             blockDown()
-            schedDown()
+            IORuntime.resetGlobal()
           },
           runtimeConfig)
       }
 
-      if (!installed) {
-        System
-          .err
-          .println(
-            "WARNING: Cats Effect global runtime already initialized; custom configurations will be ignored")
-      }
-
       _runtime = IORuntime.global
+
+      installed
+    } else {
+      unsafe.IORuntime.installGlobal(runtime)
+    }
+
+    if (!installed) {
+      System
+        .err
+        .println(
+          "WARNING: Cats Effect global runtime already initialized; custom configurations will be ignored")
     }
 
     if (isStackTracing) {
@@ -258,37 +463,53 @@ trait IOApp {
         .flatMap(_ => List("USR1", "INFO"))
 
       liveFiberSnapshotSignal foreach { name =>
-        Signal.handle(name, _ => runtime.fiberMonitor.liveFiberSnapshot(System.err.print(_)))
+        Signal.handle(
+          name,
+          _ => runtime.fiberMonitor.printLiveFiberSnapshot(System.err.print(_)))
       }
     }
 
     val rt = Runtime.getRuntime()
-    val queue = new ArrayBlockingQueue[AnyRef](1)
     val counter = new AtomicInteger(1)
 
     val ioa = run(args.toList)
 
+    // workaround for scala#12692, dotty#16352
+    val queue = this.queue
+
     val fiber =
-      ioa.unsafeRunFiber(
-        {
-          counter.decrementAndGet()
-          queue.offer(new CancellationException("IOApp main fiber was canceled"))
-          ()
-        },
-        { t =>
-          counter.decrementAndGet()
-          queue.offer(t)
-          ()
-        },
-        { a =>
-          counter.decrementAndGet()
-          queue.offer(a)
-          ()
+      JvmCpuStarvationMetrics(runtime.metrics.cpuStarvationSampler)
+        .flatMap { _ =>
+          CpuStarvationCheck
+            .run(runtimeConfig, runtime.metrics.cpuStarvationSampler, onCpuStarvationWarn)
+            .background
         }
-      )(runtime)
+        .surround(ioa)
+        .unsafeRunFiber(
+          {
+            if (counter.decrementAndGet() == 0) {
+              queue.clear()
+            }
+            queue.put(new CancellationException("IOApp main fiber was canceled"))
+          },
+          { t =>
+            if (counter.decrementAndGet() == 0) {
+              queue.clear()
+            }
+            queue.put(t)
+          },
+          { a =>
+            if (counter.decrementAndGet() == 0) {
+              queue.clear()
+            }
+            queue.put(a)
+          }
+        )(runtime)
 
     if (isStackTracing)
       runtime.fiberMonitor.monitorSuspended(fiber)
+    else
+      ()
 
     def handleShutdown(): Unit = {
       if (counter.compareAndSet(1, 0)) {
@@ -306,7 +527,7 @@ trait IOApp {
 
       // Clean up after ourselves, relevant for running IOApps in sbt,
       // otherwise scheduler threads will accumulate over time.
-      runtime.shutdown()
+      if (!isForked) runtime.shutdown()
     }
 
     val hook = new Thread(() => handleShutdown())
@@ -321,43 +542,65 @@ trait IOApp {
     }
 
     try {
-      val result = blocking(queue.take())
-      result match {
-        case ec: ExitCode =>
-          // Clean up after ourselves, relevant for running IOApps in sbt,
-          // otherwise scheduler threads will accumulate over time.
-          runtime.shutdown()
-          if (ec == ExitCode.Success) {
-            // Return naturally from main. This allows any non-daemon
-            // threads to gracefully complete their work, and managed
-            // environments to execute their own shutdown hooks.
-            if (NonDaemonThreadLogger.isEnabled())
-              new NonDaemonThreadLogger().start()
+      var done = false
+
+      while (!done) {
+        val result = blocking(queue.take())
+        result match {
+          case ec: ExitCode =>
+            // Clean up after ourselves, relevant for running IOApps in sbt,
+            // otherwise scheduler threads will accumulate over time.
+            if (!isForked) runtime.shutdown()
+            if (ec == ExitCode.Success) {
+              // Return naturally from main. This allows any non-daemon
+              // threads to gracefully complete their work, and managed
+              // environments to execute their own shutdown hooks.
+              if (isForked && logNonDaemonThreadsEnabled)
+                new NonDaemonThreadLogger(logNonDaemonThreadsInterval).start()
+              else
+                ()
+            } else if (isForked) {
+              System.exit(ec.code)
+            }
+
+            done = true
+
+          case e: CancellationException =>
+            if (isForked)
+              // Do not report cancelation exceptions but still exit with an error code.
+              System.exit(1)
             else
-              ()
-          } else if (isForked) {
-            System.exit(ec.code)
-          }
+              // if we're unforked, the only way to report cancelation is to throw
+              throw e
 
-        case e: CancellationException =>
-          if (isForked)
-            // Do not report cancelation exceptions but still exit with an error code.
-            System.exit(1)
-          else
-            // if we're unforked, the only way to report cancelation is to throw
-            throw e
+          case t: Throwable =>
+            if (UnsafeNonFatal(t)) {
+              if (isForked) {
+                t.printStackTrace()
+                System.exit(1)
+              } else {
+                throw t
+              }
+            } else {
+              t.printStackTrace()
+              rt.halt(1)
+            }
 
-        case NonFatal(t) =>
-          if (isForked) {
-            t.printStackTrace()
-            System.exit(1)
-          } else {
-            throw t
-          }
+          case r: Runnable =>
+            try {
+              r.run()
+            } catch {
+              case t if UnsafeNonFatal(t) =>
+                IOApp.this.reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime)
 
-        case t: Throwable =>
-          t.printStackTrace()
-          rt.halt(1)
+              case t: Throwable =>
+                t.printStackTrace()
+                rt.halt(1)
+            }
+
+          case _ =>
+            throw new IllegalStateException(s"${result.getClass.getName} in MainThread queue")
+        }
       }
     } catch {
       // this handles sbt when fork := false

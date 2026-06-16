@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 package cats.effect
 
+import cats.effect.metrics.CpuStarvationWarningMetrics
+import cats.effect.std.Console
 import cats.effect.tracing.TracingConstants._
 
 import scala.concurrent.CancellationException
@@ -56,10 +58,10 @@ import scala.compiletime.uninitialized
  * produce an exit code of 1.
  *
  * Note that exit codes are an implementation-specific feature of the underlying runtime, as are
- * process arguments. Naturally, all JVMs support these functions, as does NodeJS, but some
- * JavaScript execution environments will be unable to replicate these features (or they simply
- * may not make sense). In such cases, exit codes may be ignored and/or argument lists may be
- * empty.
+ * process arguments. Naturally, all JVMs support these functions, as does Node.js and Scala
+ * Native, but some JavaScript execution environments will be unable to replicate these features
+ * (or they simply may not make sense). In such cases, exit codes may be ignored and/or argument
+ * lists may be empty.
  *
  * Note that in the case of the above example, we would actually be better off using
  * [[IOApp.Simple]] rather than `IOApp` directly, since we are neither using `args` nor are we
@@ -127,6 +129,12 @@ import scala.compiletime.uninitialized
  * number of compute worker threads to "make room" for the I/O workers, such that they all sum
  * to the number of physical threads exposed by the kernel.
  *
+ * @note
+ *   While [[IOApp]] works perfectly fine for browser applications, in practice it brings little
+ *   value over calling [[IO.unsafeRunAndForget]]. You can use your UI framework's preferred API
+ *   for defining your application's entrypoint. On the other hand, Node.js applications must
+ *   use [[IOApp]] to behave correctly.
+ *
  * @see
  *   [[IO]]
  * @see
@@ -162,6 +170,23 @@ trait IOApp {
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
   /**
+   * Configures the action to perform when unhandled errors are caught by the runtime. By
+   * default, this simply delegates to [[cats.effect.std.Console!.printStackTrace]]. It is safe
+   * to perform any `IO` action within this handler; it will not block the progress of the
+   * runtime. With that said, some care should be taken to avoid raising unhandled errors as a
+   * result of handling unhandled errors, since that will result in the obvious chaos.
+   */
+  protected def reportFailure(err: Throwable): IO[Unit] =
+    Console[IO].printStackTrace(err)
+
+  /**
+   * Defines what to do when CpuStarvationCheck is triggered. Defaults to log a warning to
+   * System.err.
+   */
+  protected def onCpuStarvationWarn(metrics: CpuStarvationWarningMetrics): IO[Unit] =
+    CpuStarvationCheck.logWarning(metrics)
+
+  /**
    * The entry point for your application. Will be called by the runtime when the process is
    * started. If the underlying runtime supports it, any arguments passed to the process will be
    * made available in the `args` parameter. The numeric value within the resulting [[ExitCode]]
@@ -178,31 +203,38 @@ trait IOApp {
   def run(args: List[String]): IO[ExitCode]
 
   final def main(args: Array[String]): Unit = {
-    if (runtime == null) {
+    val installed = if (runtime == null) {
       import unsafe.IORuntime
 
       val installed = IORuntime installGlobal {
+        val compute = IORuntime.createBatchingMacrotaskExecutor(reportFailure = t =>
+          reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime))
+
         IORuntime(
-          IORuntime.defaultComputeExecutionContext,
-          IORuntime.defaultComputeExecutionContext,
+          compute,
+          compute,
           IORuntime.defaultScheduler,
-          () => (),
+          () => IORuntime.resetGlobal(),
           runtimeConfig)
       }
 
-      if (!installed) {
-        System
-          .err
-          .println(
-            "WARNING: Cats Effect global runtime already initialized; custom configurations will be ignored")
-      }
-
       _runtime = IORuntime.global
+
+      installed
+    } else {
+      unsafe.IORuntime.installGlobal(runtime)
+    }
+
+    if (!installed) {
+      System
+        .err
+        .println(
+          "WARNING: Cats Effect global runtime already initialized; custom configurations will be ignored")
     }
 
     if (LinkingInfo.developmentMode && isStackTracing) {
       val listener: js.Function0[Unit] = () =>
-        runtime.fiberMonitor.liveFiberSnapshot(System.err.print(_))
+        runtime.fiberMonitor.printLiveFiberSnapshot(System.err.print(_))
       process.on("SIGUSR2", listener)
       process.on("SIGINFO", listener)
     }
@@ -227,7 +259,12 @@ trait IOApp {
 
     var cancelCode = 1 // So this can be updated by external cancellation
     val fiber = Spawn[IO]
-      .raceOutcome[ExitCode, Nothing](run(argList), keepAlive)
+      .raceOutcome[ExitCode, Nothing](
+        CpuStarvationCheck
+          .run(runtimeConfig, runtime.metrics.cpuStarvationSampler, onCpuStarvationWarn)
+          .background
+          .surround(run(argList)),
+        keepAlive)
       .flatMap {
         case Left(Outcome.Canceled()) =>
           IO.raiseError(new CancellationException("IOApp main fiber was canceled"))

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,23 +21,35 @@ import javax.security.auth.Destroyable
 /**
  * JVM-specific Resource methods
  */
-private[effect] trait ResourcePlatform {
+private[effect] trait ResourcePlatform extends Serializable {
 
   /**
    * Creates a [[Resource]] by wrapping a Java
    * [[https://docs.oracle.com/javase/8/docs/api/javax/security/auth/Destroyable.html Destroyable]].
    *
-   * Example:
-   * {{{
+   * @example
+   *   {{{
    *   import java.security.KeyStore.PasswordProtection
-   *   import cats.effect._
+   *   import cats.effect.{IO, Resource}
+   *
+   *   def passwordProtection(getPassword: IO[Array[Char]]): Resource[IO, PasswordProtection] =
+   *     Resource.fromDestroyable(
+   *       getPassword.map(new PasswordProtection(_))
+   *     )
+   *   }}}
+   *
+   * @example
+   *   {{{
+   *   import java.security.KeyStore.PasswordProtection
+   *   import cats.effect.{Resource, Sync}
    *   import cats.syntax.all._
    *
    *   def passwordProtection[F[_]](getPassword: F[Array[Char]])(implicit F: Sync[F]): Resource[F, PasswordProtection] =
    *     Resource.fromDestroyable(
    *       getPassword.map(new PasswordProtection(_))
    *     )
-   * }}}
+   *   }}}
+   *
    * @param acquire
    *   The effect with the resource to acquire.
    * @param F

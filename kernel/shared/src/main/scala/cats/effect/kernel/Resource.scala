@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,16 @@ package cats.effect.kernel
 
 import cats._
 import cats.data.Kleisli
+import cats.effect.kernel.Resource.Pure
 import cats.effect.kernel.implicits._
 import cats.effect.kernel.instances.spawn
+import cats.mtl.{LiftKind, LiftValue}
 import cats.syntax.all._
 
 import scala.annotation.tailrec
 import scala.annotation.unchecked.uncheckedVariance
 import scala.concurrent.ExecutionContext
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration.{Duration, FiniteDuration}
 
 /**
  * `Resource` is a data structure which encodes the idea of executing an action which has an
@@ -148,12 +150,12 @@ import scala.concurrent.duration.FiniteDuration
  * @tparam A
  *   the type of resource
  */
-sealed abstract class Resource[F[_], +A] {
+sealed abstract class Resource[F[_], +A] extends Serializable {
   import Resource._
 
   private[effect] def fold[B](
       onOutput: A => F[B],
-      onRelease: F[Unit] => F[Unit]
+      onRelease: (ExitCase => F[Unit], ExitCase) => F[Unit]
   )(implicit F: MonadCancel[F, Throwable]): F[B] = {
     sealed trait Stack[AA]
     case object Nil extends Stack[A]
@@ -177,7 +179,7 @@ sealed abstract class Resource[F[_], +A] {
               }
           } {
             case ((_, release), outcome) =>
-              onRelease(release(ExitCase.fromOutcome(outcome)))
+              onRelease(release, ExitCase.fromOutcome(outcome))
           }
         case Bind(source, fs) =>
           loop(source, Frame(fs, stack))
@@ -203,7 +205,15 @@ sealed abstract class Resource[F[_], +A] {
    *   the result of applying [F] to
    */
   def use[B](f: A => F[B])(implicit F: MonadCancel[F, Throwable]): F[B] =
-    fold(f, identity)
+    fold(f, _.apply(_))
+
+  /**
+   * For a resource that allocates an action (type `F[B]`), allocate that action, run it and
+   * release it.
+   */
+
+  def useEval[B](implicit ev: A <:< F[B], F: MonadCancel[F, Throwable]): F[B] =
+    use(ev)
 
   /**
    * Allocates a resource with a non-terminating use action. Useful to run programs that are
@@ -242,6 +252,10 @@ sealed abstract class Resource[F[_], +A] {
    * _each_ of the two resources, nested finalizers are run in the usual reverse order of
    * acquisition.
    *
+   * The same [[Resource.ExitCase]] is propagated to every finalizer. If both resources acquired
+   * successfully, the [[Resource.ExitCase]] is determined by the outcome of [[use]]. Otherwise,
+   * it is determined by which resource failed or canceled first during acquisition.
+   *
    * Note that `Resource` also comes with a `cats.Parallel` instance that offers more convenient
    * access to the same functionality as `both`, for example via `parMapN`:
    *
@@ -272,19 +286,31 @@ sealed abstract class Resource[F[_], +A] {
   def both[B](
       that: Resource[F, B]
   )(implicit F: Concurrent[F]): Resource[F, (A, B)] = {
-    type Update = (F[Unit] => F[Unit]) => F[Unit]
+    type Finalizer = Resource.ExitCase => F[Unit]
+    type Update = (Finalizer => Finalizer) => F[Unit]
 
     def allocate[C](r: Resource[F, C], storeFinalizer: Update): F[C] =
-      r.fold(_.pure[F], release => storeFinalizer(F.guarantee(_, release)))
+      r.fold(
+        _.pure[F],
+        (release, _) => storeFinalizer(fin => ec => F.unit >> fin(ec).guarantee(release(ec)))
+      )
 
-    val bothFinalizers = F.ref(F.unit -> F.unit)
+    val noop: Finalizer = _ => F.unit
+    val bothFinalizers = F.ref((noop, noop))
 
-    Resource.make(bothFinalizers)(_.get.flatMap(_.parTupled).void).evalMap { store =>
-      val thisStore: Update = f => store.update(_.bimap(f, identity))
-      val thatStore: Update = f => store.update(_.bimap(identity, f))
+    Resource
+      .makeCase(bothFinalizers) { (finalizers, ec) =>
+        finalizers.get.flatMap {
+          case (thisFin, thatFin) =>
+            F.void(F.both(thisFin(ec), thatFin(ec)))
+        }
+      }
+      .evalMap { store =>
+        val thisStore: Update = f => store.update(_.bimap(f, identity))
+        val thatStore: Update = f => store.update(_.bimap(identity, f))
 
-      (allocate(this, thisStore), allocate(that, thatStore)).parTupled
-    }
+        F.both(allocate(this, thisStore), allocate(that, thatStore))
+      }
   }
 
   /**
@@ -294,7 +320,67 @@ sealed abstract class Resource[F[_], +A] {
   def race[B](
       that: Resource[F, B]
   )(implicit F: Concurrent[F]): Resource[F, Either[A, B]] =
-    Concurrent[Resource[F, *]].race(this, that)
+    Resource.applyFull { poll =>
+      def cancelLoser[C](f: Fiber[F, Throwable, (C, ExitCase => F[Unit])]): F[Unit] =
+        f.cancel *>
+          f.join
+            .flatMap(
+              _.fold(
+                F.unit,
+                _ => F.unit,
+                _.flatMap(_._2.apply(ExitCase.Canceled))
+              )
+            )
+
+      poll(F.racePair(this.allocatedCase, that.allocatedCase)).flatMap {
+        case Left((oc, f)) =>
+          oc match {
+            case Outcome.Succeeded(fa) =>
+              cancelLoser(f).start.flatMap { f =>
+                fa.map {
+                  case (a, fin) =>
+                    (
+                      Either.left[A, B](a),
+                      fin(_: ExitCase).guarantee(f.join.flatMap(_.embedNever)))
+                }
+              }
+            case Outcome.Errored(ea) =>
+              F.raiseError[(Either[A, B], ExitCase => F[Unit])](ea).guarantee(cancelLoser(f))
+            case Outcome.Canceled() =>
+              f.cancel *> f.join flatMap {
+                case Outcome.Succeeded(fb) =>
+                  fb.map { case (b, fin) => (Either.right[A, B](b), fin) }
+                case Outcome.Errored(eb) =>
+                  F.raiseError[(Either[A, B], ExitCase => F[Unit])](eb)
+                case Outcome.Canceled() =>
+                  poll(F.canceled) *> F.never[(Either[A, B], ExitCase => F[Unit])]
+              }
+          }
+        case Right((f, oc)) =>
+          oc match {
+            case Outcome.Succeeded(fb) =>
+              cancelLoser(f).start.flatMap { f =>
+                fb.map {
+                  case (b, fin) =>
+                    (
+                      Either.right[A, B](b),
+                      fin(_: ExitCase).guarantee(f.join.flatMap(_.embedNever)))
+                }
+              }
+            case Outcome.Errored(eb) =>
+              F.raiseError[(Either[A, B], ExitCase => F[Unit])](eb).guarantee(cancelLoser(f))
+            case Outcome.Canceled() =>
+              f.cancel *> f.join flatMap {
+                case Outcome.Succeeded(fa) =>
+                  fa.map { case (a, fin) => (Either.left[A, B](a), fin) }
+                case Outcome.Errored(ea) =>
+                  F.raiseError[(Either[A, B], ExitCase => F[Unit])](ea)
+                case Outcome.Canceled() =>
+                  poll(F.canceled) *> F.never[(Either[A, B], ExitCase => F[Unit])]
+              }
+          }
+      }
+    }
 
   /**
    * Implementation for the `flatMap` operation, as described via the `cats.Monad` type class.
@@ -317,7 +403,7 @@ sealed abstract class Resource[F[_], +A] {
    */
   def mapK[G[_]](
       f: F ~> G
-  )(implicit F: MonadCancel[F, _], G: MonadCancel[G, _]): Resource[G, A] =
+  )(implicit F: MonadCancel[F, ?], G: MonadCancel[G, ?]): Resource[G, A] =
     this match {
       case Allocate(resource) =>
         Resource.applyFull { (gpoll: Poll[G]) =>
@@ -609,30 +695,57 @@ sealed abstract class Resource[F[_], +A] {
   }
 
   def evalOn(ec: ExecutionContext)(implicit F: Async[F]): Resource[F, A] =
-    Resource.applyFull { poll => poll(this.allocatedCase).evalOn(ec) }
-
-  def attempt[E](implicit F: ApplicativeError[F, E]): Resource[F, Either[E, A]] =
-    this match {
-      case Allocate(resource) =>
-        Resource.applyFull { poll =>
-          resource(poll).attempt.map {
-            case Left(error) => (Left(error), (_: ExitCase) => F.unit)
-            case Right((a, release)) => (Right(a), release)
-          }
-        }
-      case Bind(source, f) =>
-        Resource.unit.flatMap(_ => source.attempt).flatMap {
-          case Left(error) => Resource.pure(error.asLeft)
-          case Right(s) => f(s).attempt
-        }
-      case p @ Pure(_) =>
-        Resource.pure(p.a.asRight)
-      case e @ Eval(_) =>
-        Resource.eval(e.fa.attempt)
+    Resource.applyFull { poll =>
+      poll(this.allocatedCase).evalOn(ec).map {
+        case (a, release) => (a, release.andThen(_.evalOn(ec)))
+      }
     }
 
+  @deprecated("Use overload with MonadCancelThrow", "3.6.0")
+  def attempt[E](F: ApplicativeError[F, E]): Resource[F, Either[E, A]] =
+    F match {
+      case x: Sync[F] =>
+        attempt(x).asInstanceOf[Resource[F, Either[E, A]]]
+      case _ =>
+        implicit val x: ApplicativeError[F, E] = F
+        this match {
+          case Allocate(resource) =>
+            Resource.applyFull { poll =>
+              resource(poll).attempt.map {
+                case Left(error) => (Left(error), (_: ExitCase) => F.unit)
+                case Right((a, release)) => (Right(a), release)
+              }
+            }
+          case Bind(source, f) =>
+            Resource.unit.flatMap(_ => source.attempt(F)).flatMap {
+              case Left(error) => Resource.pure(error.asLeft)
+              case Right(s) => f(s).attempt(F)
+            }
+          case p @ Pure(_) =>
+            Resource.pure(p.a.asRight)
+          case e @ Eval(_) =>
+            Resource.eval(e.fa.attempt)
+        }
+    }
+
+  def attempt(implicit F: MonadCancelThrow[F]): Resource[F, Either[Throwable, A]] =
+    Resource.applyFull[F, Either[Throwable, A]] { poll =>
+      poll(allocatedCase).attempt.map {
+        case Right((a, r)) => (a.asRight[Throwable], r)
+        case error => (error.asInstanceOf[Either[Throwable, A]], _ => F.unit)
+      }
+    }
+
+  @deprecated("Use overload with MonadCancelThrow", "3.6.0")
   def handleErrorWith[B >: A, E](f: E => Resource[F, B])(
-      implicit F: ApplicativeError[F, E]): Resource[F, B] =
+      F: ApplicativeError[F, E]): Resource[F, B] =
+    attempt(F).flatMap {
+      case Right(a) => Resource.pure(a)
+      case Left(e) => f(e)
+    }
+
+  def handleErrorWith[B >: A](f: Throwable => Resource[F, B])(
+      implicit F: MonadCancelThrow[F]): Resource[F, B] =
     attempt.flatMap {
       case Right(a) => Resource.pure(a)
       case Left(e) => f(e)
@@ -648,12 +761,37 @@ sealed abstract class Resource[F[_], +A] {
       implicit F: MonadCancel[F, Throwable],
       K: SemigroupK[F],
       G: Ref.Make[F]): Resource[F, B] =
-    Resource.make(Ref[F].of(F.unit))(_.get.flatten).evalMap { finalizers =>
-      def allocate(r: Resource[F, B]): F[B] =
-        r.fold(_.pure[F], (release: F[Unit]) => finalizers.update(_.guarantee(release)))
+    Resource
+      .makeCase(Ref[F].of((_: Resource.ExitCase) => F.unit))((fin, ec) =>
+        fin.get.flatMap(_(ec)))
+      .evalMap { finalizers =>
+        def allocate(r: Resource[F, B]): F[B] =
+          r.fold(
+            _.pure[F],
+            (release, _) =>
+              finalizers.update(fin => ec => F.unit >> fin(ec).guarantee(release(ec)))
+          )
 
-      K.combineK(allocate(this), allocate(that))
+        K.combineK(allocate(this), allocate(that))
+      }
+
+  /**
+   * A Resource where the acquire step is done lazily and memoized. This means that acquire
+   * happens only if and when the `F[A]` value is executed, instead of happening immediately
+   * upon `use()`. If the `F[A]` value is executed multiple times, acquire happens once only and
+   * the acquired resource is shared to all callers. The resource is released as normal at the
+   * end of `use` (whether normal termination, error, or cancelled), if it was acquired.
+   */
+  def memoizedAcquire[B >: A](implicit F: Concurrent[F]): Resource[F, F[B]] = {
+    Resource.eval(F.ref(List.empty[Resource.ExitCase => F[Unit]])).flatMap { release =>
+      val fa2 = F.uncancelable { poll =>
+        poll(allocatedCase).flatMap { case (a, r) => release.update(r :: _).as(a) }
+      }
+      Resource.makeCaseFull[F, F[B]](poll => poll(F.memoize(fa2)).map(_.widen)) { (_, exit) =>
+        release.get.flatMap(_.foldMapM(_(exit)))
+      }
     }
+  }
 
 }
 
@@ -708,8 +846,8 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    * waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * TODO make sure this api, which is more general than makeFull, doesn't allow for
    * interruptible releases
@@ -770,16 +908,15 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
     applyCase[F, A](acquire.map(a => (a, e => release(a, e))))
 
   /**
-   * Creates a resource from an acquiring effect and a release function that can discriminate
-   * between different [[ExitCase exit cases]].
+   * Creates a resource from a possibly cancelable acquiring effect and a release function.
    *
-   * The acquiring effect takes a `Poll[F]` to allow for interruptible acquires, which is most
+   * The acquiring effect takes a `Poll[F]` to allow for cancelable acquires, which is most
    * often useful when acquiring lock-like structures: it should be possible to interrupt a
    * fiber waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * @tparam F
    *   the effect type in which the resource is acquired and released
@@ -795,16 +932,16 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
     applyFull[F, A](poll => acquire(poll).map(a => (a, _ => release(a))))
 
   /**
-   * Creates a resource from an acquiring effect and a release function that can discriminate
-   * between different [[ExitCase exit cases]].
+   * Creates a resource from a possibly cancelable acquiring effect and a release function that
+   * can discriminate between different [[ExitCase exit cases]].
    *
-   * The acquiring effect takes a `Poll[F]` to allow for interruptible acquires, which is most
+   * The acquiring effect takes a `Poll[F]` to allow for cancelable acquires, which is most
    * often useful when acquiring lock-like structures: it should be possible to interrupt a
    * fiber waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * @tparam F
    *   the effect type in which the resource is acquired and released
@@ -889,8 +1026,19 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    * In most real world cases, implementors of AutoCloseable are blocking as well, so the close
    * action runs in the blocking context.
    *
-   * Example:
-   * {{{
+   * @example
+   *   {{{
+   *   import cats.effect._
+   *   import scala.io.Source
+   *
+   *   def reader(data: String): Resource[IO, Source] =
+   *     Resource.fromAutoCloseable(IO.blocking {
+   *       Source.fromString(data)
+   *     })
+   *   }}}
+   *
+   * @example
+   *   {{{
    *   import cats.effect._
    *   import scala.io.Source
    *
@@ -898,7 +1046,8 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    *     Resource.fromAutoCloseable(F.blocking {
    *       Source.fromString(data)
    *     })
-   * }}}
+   *   }}}
+   *
    * @param acquire
    *   The effect with the resource to acquire.
    * @param F
@@ -914,7 +1063,7 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
       implicit F: Sync[F]): Resource[F, A] =
     Resource.make(acquire)(autoCloseable => F.blocking(autoCloseable.close()))
 
-  def canceled[F[_]](implicit F: MonadCancel[F, _]): Resource[F, Unit] =
+  def canceled[F[_]](implicit F: MonadCancel[F, ?]): Resource[F, Unit] =
     Resource.eval(F.canceled)
 
   def uncancelable[F[_], A](body: Poll[Resource[F, *]] => Resource[F, A])(
@@ -931,17 +1080,17 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
   def unique[F[_]](implicit F: Unique[F]): Resource[F, Unique.Token] =
     Resource.eval(F.unique)
 
-  def never[F[_], A](implicit F: GenSpawn[F, _]): Resource[F, A] =
+  def never[F[_], A](implicit F: GenSpawn[F, ?]): Resource[F, A] =
     Resource.eval(F.never[A])
 
-  def cede[F[_]](implicit F: GenSpawn[F, _]): Resource[F, Unit] =
+  def cede[F[_]](implicit F: GenSpawn[F, ?]): Resource[F, Unit] =
     Resource.eval(F.cede)
 
   def deferred[F[_], A](
-      implicit F: GenConcurrent[F, _]): Resource[F, Deferred[Resource[F, *], A]] =
+      implicit F: GenConcurrent[F, ?]): Resource[F, Deferred[Resource[F, *], A]] =
     Resource.eval(F.deferred[A]).map(_.mapK(Resource.liftK[F]))
 
-  def ref[F[_], A](a: A)(implicit F: GenConcurrent[F, _]): Resource[F, Ref[Resource[F, *], A]] =
+  def ref[F[_], A](a: A)(implicit F: GenConcurrent[F, ?]): Resource[F, Ref[Resource[F, *], A]] =
     Resource.eval(F.ref(a)).map(_.mapK(Resource.liftK[F]))
 
   def monotonic[F[_]](implicit F: Clock[F]): Resource[F, FiniteDuration] =
@@ -953,8 +1102,12 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
   def suspend[F[_], A](hint: Sync.Type)(thunk: => A)(implicit F: Sync[F]): Resource[F, A] =
     Resource.eval(F.suspend(hint)(thunk))
 
-  def sleep[F[_]](time: FiniteDuration)(implicit F: GenTemporal[F, _]): Resource[F, Unit] =
+  def sleep[F[_]](time: Duration)(implicit F: GenTemporal[F, ?]): Resource[F, Unit] =
     Resource.eval(F.sleep(time))
+
+  @deprecated("Use overload with Duration", "3.4.0")
+  def sleep[F[_]](time: FiniteDuration, F: GenTemporal[F, ?]): Resource[F, Unit] =
+    sleep(time: Duration)(F)
 
   def cont[F[_], K, R](body: Cont[Resource[F, *], K, R])(implicit F: Async[F]): Resource[F, R] =
     Resource.applyFull { poll =>
@@ -967,23 +1120,22 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
               val nt2 = new (Resource[F, *] ~> D) {
                 def apply[A](rfa: Resource[F, A]) =
                   Kleisli { r =>
-                    nt(rfa.allocatedCase) flatMap {
-                      case (a, fin) =>
-                        r.update(f => (ec: ExitCase) => f(ec) !> (F.unit >> fin(ec))).as(a)
+                    G uncancelable { poll =>
+                      poll(nt(rfa.allocatedCase)) flatMap {
+                        case (a, fin) =>
+                          r.update(f => (ec: ExitCase) => f(ec) !> (F.unit >> fin(ec))).as(a)
+                      }
                     }
                   }
               }
 
-              for {
-                r <- nt(F.ref((_: ExitCase) => F.unit).map(_.mapK(nt)))
-
-                a <- G.guaranteeCase(body[D].apply(cb, Kleisli.liftF(ga), nt2).run(r)) {
+              nt(F.ref((_: ExitCase) => F.unit).map(_.mapK(nt))) flatMap { r =>
+                G.guaranteeCase(
+                  (body[D].apply(cb, Kleisli.liftF(ga), nt2).run(r), r.get).tupled) {
                   case Outcome.Succeeded(_) => G.unit
                   case oc => r.get.flatMap(fin => nt(fin(ExitCase.fromOutcome(oc))))
                 }
-
-                fin <- r.get
-              } yield (a, fin)
+              }
             }
           }
         }
@@ -1103,13 +1255,16 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
 
   implicit def parallelForResource[F[_]: Concurrent]: Parallel.Aux[Resource[F, *], Par[F, *]] =
     spawn.parallelForGenSpawn[Resource[F, *], Throwable]
+
+  implicit def commutativeApplicativeForResource[F[_]: Concurrent]
+      : CommutativeApplicative[Par[F, *]] =
+    spawn.commutativeApplicativeForParallelF[Resource[F, *], Throwable]
 }
 
 private[effect] trait ResourceHOInstances0 extends ResourceHOInstances1 {
   implicit def catsEffectAsyncForResource[F[_]](implicit F0: Async[F]): Async[Resource[F, *]] =
     new ResourceAsync[F] {
       def F = F0
-      override def applicative = this
     }
 
   implicit def catsEffectSemigroupKForResource[F[_], A](
@@ -1121,6 +1276,10 @@ private[effect] trait ResourceHOInstances0 extends ResourceHOInstances1 {
       def K = K0
       def G = G0
     }
+
+  implicit def catsEffectLiftKindForResource[F[_]](
+      implicit F: MonadCancel[F, ?]): LiftKind[F, Resource[F, *]] =
+    liftKindImpl(F)
 }
 
 private[effect] trait ResourceHOInstances1 extends ResourceHOInstances2 {
@@ -1128,7 +1287,6 @@ private[effect] trait ResourceHOInstances1 extends ResourceHOInstances2 {
       implicit F0: Temporal[F]): Temporal[Resource[F, *]] =
     new ResourceTemporal[F] {
       def F = F0
-      override def applicative = this
     }
 
   implicit def catsEffectSyncForResource[F[_]](implicit F0: Sync[F]): Sync[Resource[F, *]] =
@@ -1136,6 +1294,25 @@ private[effect] trait ResourceHOInstances1 extends ResourceHOInstances2 {
       def F = F0
       def rootCancelScope = F0.rootCancelScope
     }
+
+  protected[this] def liftKindImpl[F[_]](F: MonadCancel[F, ?]): LiftKind[F, Resource[F, *]] =
+    new LiftKind[F, Resource[F, *]] {
+      implicit val applicativeF: MonadCancel[F, ?] = F
+      val applicativeG: Applicative[Resource[F, *]] = catsEffectMonadForResource
+      def apply[A](fa: F[A]): Resource[F, A] = Resource.eval(fa)
+      def limitedMapK[A](ga: Resource[F, A])(scope: F ~> F): Resource[F, A] =
+        ga.mapK(scope)
+    }
+
+  implicit def catsEffectLiftKindForResourceComposed[F[_], G[_]](
+      implicit inner: LiftKind[F, G],
+      G: MonadCancel[G, ?]
+  ): LiftKind[F, Resource[G, *]] =
+    inner.andThen(liftKindImpl(G))
+
+  implicit def catsEffectLiftValueForResource[F[_]](
+      implicit F: Applicative[F]): LiftValue[F, Resource[F, *]] =
+    liftValueImpl(F)
 }
 
 private[effect] trait ResourceHOInstances2 extends ResourceHOInstances3 {
@@ -1143,7 +1320,6 @@ private[effect] trait ResourceHOInstances2 extends ResourceHOInstances3 {
       implicit F0: Concurrent[F]): Concurrent[Resource[F, *]] =
     new ResourceConcurrent[F] {
       def F = F0
-      override def applicative = this
     }
 
   implicit def catsEffectClockForResource[F[_]](
@@ -1153,6 +1329,21 @@ private[effect] trait ResourceHOInstances2 extends ResourceHOInstances3 {
       def F = F0
       def applicative = FA
     }
+
+  final implicit def catsEffectDeferForResource[F[_]]: Defer[Resource[F, *]] =
+    new ResourceDefer[F]
+
+  protected[this] def liftValueImpl[F[_]](F: Applicative[F]): LiftValue[F, Resource[F, *]] =
+    new LiftValue[F, Resource[F, *]] {
+      val applicativeF: Applicative[F] = F
+      val applicativeG: Applicative[Resource[F, *]] = catsEffectMonadForResource
+      def apply[A](fa: F[A]): Resource[F, A] = Resource.eval(fa)
+    }
+
+  implicit def catsEffectLiftValueForResourceComposed[F[_], G[_]](
+      implicit inner: LiftValue[F, G]
+  ): LiftValue[F, Resource[G, *]] =
+    inner.andThen(liftValueImpl(inner.applicativeG))
 }
 
 private[effect] trait ResourceHOInstances3 extends ResourceHOInstances4 {
@@ -1165,44 +1356,70 @@ private[effect] trait ResourceHOInstances3 extends ResourceHOInstances4 {
 }
 
 private[effect] trait ResourceHOInstances4 extends ResourceHOInstances5 {
-  implicit def catsEffectMonadErrorForResource[F[_], E](
-      implicit F0: MonadError[F, E]): MonadError[Resource[F, *], E] =
+  @deprecated("Use catsEffectMonadCancelForResource", "3.6.0")
+  def catsEffectMonadErrorForResource[F[_], E](
+      F0: MonadError[F, E]): MonadError[Resource[F, *], E] =
     new ResourceMonadError[F, E] {
       def F = F0
     }
 }
 
 private[effect] trait ResourceHOInstances5 {
-  implicit def catsEffectMonadForResource[F[_]](implicit F0: Monad[F]): Monad[Resource[F, *]] =
-    new ResourceMonad[F] {
-      def F = F0
-    }
+  implicit def catsEffectMonadForResource[F[_]]: Monad[Resource[F, *]] =
+    new ResourceMonad[F]
+
+  @deprecated("Use overload without constraint", "3.4.0")
+  def catsEffectMonadForResource[F[_]](F: Monad[F]): Monad[Resource[F, *]] = {
+    val _ = F
+    catsEffectMonadForResource[F]
+  }
 }
 
 abstract private[effect] class ResourceFOInstances0 extends ResourceFOInstances1 {
   implicit def catsEffectMonoidForResource[F[_], A](
-      implicit F0: Monad[F],
-      A0: Monoid[A]): Monoid[Resource[F, A]] =
+      implicit A0: Monoid[A]): Monoid[Resource[F, A]] =
     new ResourceMonoid[F, A] {
       def A = A0
-      def F = F0
     }
+
+  @deprecated("Use overload without monad constraint", "3.4.0")
+  def catsEffectMonoidForResource[F[_], A](
+      F0: Monad[F],
+      A0: Monoid[A]): Monoid[Resource[F, A]] = {
+    val _ = F0
+    catsEffectMonoidForResource(A0)
+  }
 }
 
 abstract private[effect] class ResourceFOInstances1 {
   implicit def catsEffectSemigroupForResource[F[_], A](
-      implicit F0: Monad[F],
-      A0: Semigroup[A]): ResourceSemigroup[F, A] =
+      implicit A0: Semigroup[A]): ResourceSemigroup[F, A] =
     new ResourceSemigroup[F, A] {
       def A = A0
-      def F = F0
     }
+
+  @deprecated("Use overload without monad constraint", "3.4.0")
+  def catsEffectSemigroupForResource[F[_], A](
+      F0: Monad[F],
+      A0: Semigroup[A]): ResourceSemigroup[F, A] = {
+    val _ = F0
+    catsEffectSemigroupForResource[F, A](A0)
+  }
 }
 
 abstract private[effect] class ResourceMonadCancel[F[_]]
-    extends ResourceMonadError[F, Throwable]
+    extends ResourceMonad[F]
     with MonadCancel[Resource[F, *], Throwable] {
   implicit protected def F: MonadCancel[F, Throwable]
+
+  override def attempt[A](fa: Resource[F, A]): Resource[F, Either[Throwable, A]] =
+    fa.attempt
+
+  def handleErrorWith[A](fa: Resource[F, A])(f: Throwable => Resource[F, A]): Resource[F, A] =
+    fa.handleErrorWith(f)
+
+  def raiseError[A](e: Throwable): Resource[F, A] =
+    Resource.raiseError[F, A, Throwable](e)
 
   def canceled: Resource[F, Unit] = Resource.canceled
 
@@ -1243,6 +1460,12 @@ abstract private[effect] class ResourceConcurrent[F[_]]
 
   override def both[A, B](fa: Resource[F, A], fb: Resource[F, B]): Resource[F, (A, B)] =
     fa.both(fb)
+
+  override def race[A, B](fa: Resource[F, A], fb: Resource[F, B]): Resource[F, Either[A, B]] =
+    fa.race(fb)
+
+  override def memoize[A](fa: Resource[F, A]): Resource[F, Resource[F, A]] =
+    fa.memoizedAcquire.map(Resource.eval(_))
 }
 
 private[effect] trait ResourceClock[F[_]] extends Clock[Resource[F, *]] {
@@ -1281,10 +1504,20 @@ abstract private[effect] class ResourceAsync[F[_]]
     with Async[Resource[F, *]] { self =>
   implicit protected def F: Async[F]
 
-  override def applicative = this
-
   override def unique: Resource[F, Unique.Token] =
     Resource.unique
+
+  override def syncStep[G[_], A](fa: Resource[F, A], limit: Int)(
+      implicit G: Sync[G]): G[Either[Resource[F, A], A]] =
+    fa match {
+      case Pure(a) => G.pure(Right(a))
+      case Resource.Eval(fa) =>
+        G.map(F.syncStep[G, A](F.widen(fa), limit)) {
+          case Left(fa) => Left(Resource.eval(fa))
+          case Right(a) => Right(a)
+        }
+      case r => G.pure(Left(r))
+    }
 
   override def never[A]: Resource[F, A] =
     Resource.never
@@ -1299,6 +1532,7 @@ abstract private[effect] class ResourceAsync[F[_]]
     Resource.executionContext
 }
 
+@deprecated("Use ResourceMonadCancel", "3.6.0")
 abstract private[effect] class ResourceMonadError[F[_], E]
     extends ResourceMonad[F]
     with MonadError[Resource[F, *], E] {
@@ -1306,20 +1540,18 @@ abstract private[effect] class ResourceMonadError[F[_], E]
   implicit protected def F: MonadError[F, E]
 
   override def attempt[A](fa: Resource[F, A]): Resource[F, Either[E, A]] =
-    fa.attempt
+    fa.attempt(F)
 
   def handleErrorWith[A](fa: Resource[F, A])(f: E => Resource[F, A]): Resource[F, A] =
-    fa.handleErrorWith(f)
+    fa.handleErrorWith(f)(F)
 
   def raiseError[A](e: E): Resource[F, A] =
     Resource.raiseError[F, A, E](e)
 }
 
-abstract private[effect] class ResourceMonad[F[_]]
+private[effect] class ResourceMonad[F[_]]
     extends Monad[Resource[F, *]]
     with StackSafeMonad[Resource[F, *]] {
-
-  implicit protected def F: Monad[F]
 
   def pure[A](a: A): Resource[F, A] =
     Resource.pure(a)
@@ -1337,7 +1569,6 @@ abstract private[effect] class ResourceMonoid[F[_], A]
 }
 
 abstract private[effect] class ResourceSemigroup[F[_], A] extends Semigroup[Resource[F, A]] {
-  implicit protected def F: Monad[F]
   implicit protected def A: Semigroup[A]
 
   def combine(rx: Resource[F, A], ry: Resource[F, A]): Resource[F, A] =
@@ -1351,4 +1582,8 @@ abstract private[effect] class ResourceSemigroupK[F[_]] extends SemigroupK[Resou
 
   def combineK[A](ra: Resource[F, A], rb: Resource[F, A]): Resource[F, A] =
     ra.combineK(rb)
+}
+
+private[effect] final class ResourceDefer[F[_]] extends Defer[Resource[F, *]] {
+  def defer[A](fa: => Resource[F, A]): Resource[F, A] = Resource.unit.flatMap(_ => fa)
 }

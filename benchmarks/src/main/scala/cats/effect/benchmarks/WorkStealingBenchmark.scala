@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import cats.syntax.all._
 import org.openjdk.jmh.annotations._
 
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 
 import java.util.concurrent.{Executors, TimeUnit}
 import java.util.concurrent.atomic.AtomicInteger
@@ -36,7 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Or to run the benchmark from within sbt:
  *
- * jmh:run -i 10 -wi 10 -f 2 -t 1 cats.effect.benchmarks.WorkStealingBenchmark
+ * Jmh / run -i 10 -wi 10 -f 2 -t 1 cats.effect.benchmarks.WorkStealingBenchmark
  *
  * Which means "10 iterations", "10 warm-up iterations", "2 forks", "1 thread". Please note that
  * benchmarks should be usually executed at least in 10 iterations (as a rule of thumb), but
@@ -82,7 +83,7 @@ class WorkStealingBenchmark {
       IO {
         val size = math.max(100, math.min(n, 2000))
         val array = new Array[AnyRef](size)
-        for (i <- (0 until size)) {
+        for (i <- 0 until size) {
           array(i) = new AnyRef()
         }
         array
@@ -133,7 +134,7 @@ class WorkStealingBenchmark {
       }
     }
 
-    (0 to theSize).foreach(_ => run(0))
+    (0 until theSize).foreach(_ => run(0))
 
     countDown.await()
   }
@@ -145,6 +146,11 @@ class WorkStealingBenchmark {
   @Benchmark
   def runnableScheduling(): Unit = {
     runnableSchedulingBenchmark(cats.effect.unsafe.implicits.global.compute)
+  }
+
+  @Benchmark
+  def runnableSchedulingScalaGlobal(): Unit = {
+    runnableSchedulingBenchmark(ExecutionContext.global)
   }
 
   lazy val manyThreadsRuntime: IORuntime = {
@@ -159,18 +165,16 @@ class WorkStealingBenchmark {
       (ExecutionContext.fromExecutor(executor), () => executor.shutdown())
     }
 
-    val (scheduler, schedDown) = {
-      val executor = Executors.newSingleThreadScheduledExecutor { r =>
-        val t = new Thread(r)
-        t.setName("io-scheduler")
-        t.setDaemon(true)
-        t.setPriority(Thread.MAX_PRIORITY)
-        t
-      }
-      (Scheduler.fromScheduledExecutor(executor), () => executor.shutdown())
-    }
-
-    val compute = new WorkStealingThreadPool(256, "io-compute", manyThreadsRuntime)
+    val compute = new WorkStealingThreadPool[AnyRef](
+      256,
+      "io-compute",
+      "io-blocker",
+      60.seconds,
+      false,
+      1.second,
+      SleepSystem,
+      _.printStackTrace(),
+      (_, t) => t.printStackTrace())
 
     val cancelationCheckThreshold =
       System.getProperty("cats.effect.cancelation.check.threshold", "512").toInt
@@ -178,11 +182,10 @@ class WorkStealingBenchmark {
     IORuntime(
       compute,
       blocking,
-      scheduler,
+      compute,
       () => {
         compute.shutdown()
         blockDown()
-        schedDown()
       },
       IORuntimeConfig(
         cancelationCheckThreshold,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -97,6 +97,11 @@ trait Sync[F[_]] extends MonadCancel[F, Throwable] with Clock[F] with Unique[F] 
    * interrupts in the event of cancelation. The interrupt will be attempted repeatedly until
    * the blocking operation completes or exits.
    *
+   * @note
+   *   that this _really_ means what it says - it will throw exceptions in a tight loop until
+   *   the offending blocking operation exits. This is extremely expensive if it happens on a
+   *   hot path and the blocking operation is badly behaved and doesn't exit immediately.
+   *
    * @param thunk
    *   The side effect which is to be suspended in `F[_]` and evaluated on a blocking execution
    *   context
@@ -111,70 +116,95 @@ object Sync {
   def apply[F[_]](implicit F: Sync[F]): F.type = F
 
   implicit def syncForOptionT[F[_]](implicit F0: Sync[F]): Sync[OptionT[F, *]] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForOptionT[F](async)
+      case sync =>
+        instantiateSyncForOptionT(sync)
+    }
+
+  private[kernel] def instantiateSyncForOptionT[F[_]](F0: Sync[F]): OptionTSync[F] =
     new OptionTSync[F] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
+      implicit protected def F: Sync[F] = F0
     }
 
   implicit def syncForEitherT[F[_], E](implicit F0: Sync[F]): Sync[EitherT[F, E, *]] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForEitherT[F, E](async)
+      case sync =>
+        instantiateSyncForEitherT(sync)
+    }
+
+  private[kernel] def instantiateSyncForEitherT[F[_], E](F0: Sync[F]): EitherTSync[F, E] =
     new EitherTSync[F, E] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
+      implicit protected def F: Sync[F] = F0
     }
 
   implicit def syncForStateT[F[_], S](implicit F0: Sync[F]): Sync[StateT[F, S, *]] =
     new StateTSync[F, S] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
+      implicit protected def F: Sync[F] = F0
     }
 
   implicit def syncForWriterT[F[_], L](
       implicit F0: Sync[F],
       L0: Monoid[L]): Sync[WriterT[F, L, *]] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForWriterT[F, L](async, L0)
+      case sync =>
+        instantiateSyncForWriterT(sync)
+    }
+
+  private[kernel] def instantiateSyncForWriterT[F[_], L](F0: Sync[F])(
+      implicit L0: Monoid[L]): WriterTSync[F, L] =
     new WriterTSync[F, L] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
-
+      implicit protected def F: Sync[F] = F0
       implicit def L: Monoid[L] = L0
     }
 
   implicit def syncForIorT[F[_], L](
       implicit F0: Sync[F],
       L0: Semigroup[L]): Sync[IorT[F, L, *]] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForIorT[F, L](async, L0)
+      case sync =>
+        instantiateSyncForIorT(sync)
+    }
+
+  private[kernel] def instantiateSyncForIorT[F[_], L](F0: Sync[F])(
+      implicit L0: Semigroup[L]): IorTSync[F, L] =
     new IorTSync[F, L] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
-
+      implicit protected def F: Sync[F] = F0
       implicit def L: Semigroup[L] = L0
     }
 
   implicit def syncForKleisli[F[_], R](implicit F0: Sync[F]): Sync[Kleisli[F, R, *]] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForKleisli[F, R](async)
+      case sync =>
+        instantiateSyncForKleisli(sync)
+    }
+
+  private[kernel] def instantiateSyncForKleisli[F[_], R](F0: Sync[F]): KleisliSync[F, R] =
     new KleisliSync[F, R] {
-
       def rootCancelScope = F0.rootCancelScope
-
-      implicit def F: Sync[F] = F0
+      implicit protected def F: Sync[F] = F0
     }
 
   implicit def syncForReaderWriterStateT[F[_], R, L, S](
       implicit F0: Sync[F],
       L0: Monoid[L]): Sync[ReaderWriterStateT[F, R, L, S, *]] =
     new ReaderWriterStateTSync[F, R, L, S] {
-
       def rootCancelScope = F0.rootCancelScope
-
       implicit override def F: Sync[F] = F0
-
       implicit override def L: Monoid[L] = L0
     }
 
@@ -184,7 +214,7 @@ object Sync {
       with Clock.OptionTClock[F] {
 
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): OptionT[F, A] =
       OptionT.liftF(F.suspend(hint)(thunk))
@@ -195,7 +225,7 @@ object Sync {
       with MonadCancel.EitherTMonadCancel[F, E, Throwable]
       with Clock.EitherTClock[F, E] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): EitherT[F, E, A] =
       EitherT.liftF(F.suspend(hint)(thunk))
@@ -206,7 +236,7 @@ object Sync {
       with MonadCancel.StateTMonadCancel[F, S, Throwable]
       with Clock.StateTClock[F, S] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): StateT[F, S, A] =
       StateT.liftF(F.suspend(hint)(thunk))
@@ -217,7 +247,7 @@ object Sync {
       with MonadCancel.WriterTMonadCancel[F, S, Throwable]
       with Clock.WriterTClock[F, S] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): WriterT[F, S, A] =
       WriterT.liftF(F.suspend(hint)(thunk))
@@ -228,7 +258,7 @@ object Sync {
       with MonadCancel.IorTMonadCancel[F, L, Throwable]
       with Clock.IorTClock[F, L] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): IorT[F, L, A] =
       IorT.liftF(F.suspend(hint)(thunk))
@@ -239,7 +269,7 @@ object Sync {
       with MonadCancel.KleisliMonadCancel[F, R, Throwable]
       with Clock.KleisliClock[F, R] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): Kleisli[F, R, A] =
       Kleisli.liftF(F.suspend(hint)(thunk))
@@ -250,7 +280,7 @@ object Sync {
       with MonadCancel.ReaderWriterStateTMonadCancel[F, R, L, S, Throwable]
       with Clock.ReaderWriterStateTClock[F, R, L, S] {
     implicit protected def F: Sync[F]
-    protected def C = F
+    protected def C: Clock[F] = F
 
     def suspend[A](hint: Type)(thunk: => A): ReaderWriterStateT[F, R, L, S, A] =
       ReaderWriterStateT.liftF(F.suspend(hint)(thunk))

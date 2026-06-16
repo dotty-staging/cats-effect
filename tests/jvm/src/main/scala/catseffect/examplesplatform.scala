@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,9 +19,14 @@ package catseffect
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.syntax.all._
 
-import scala.concurrent.duration.Duration
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration._
 
-import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+
+package object examples {
+  def exampleExecutionContext = ExecutionContext.global
+}
 
 package examples {
 
@@ -30,8 +35,7 @@ package examples {
     override protected def runtimeConfig =
       super.runtimeConfig.copy(shutdownHookTimeout = Duration.Zero)
 
-    val run: IO[Unit] =
-      IO(System.exit(0)).uncancelable
+    val run: IO[Unit] = IO(System.exit(0))
   }
 
   object FatalErrorUnsafeRun extends IOApp {
@@ -45,21 +49,47 @@ package examples {
       } yield ExitCode.Success
   }
 
-  object Finalizers extends IOApp {
-    import java.io.FileWriter
-
-    def writeToFile(string: String, file: File): IO[Unit] =
-      IO(new FileWriter(file)).bracket { writer => IO(writer.write(string)) }(writer =>
-        IO(writer.close()))
-
+  object EvalOnMainThread extends IOApp {
     def run(args: List[String]): IO[ExitCode] =
-      (IO(println("Started")) >> IO.never)
-        .onCancel(writeToFile("canceled", new File(args.head)))
-        .as(ExitCode.Success)
+      IO(Thread.currentThread().getId()).evalOn(MainThread) map {
+        case 1L => ExitCode.Success
+        case _ => ExitCode.Error
+      }
   }
 
-  // just a stub to satisfy compiler, never run on JVM
-  object UndefinedProcessExit extends IOApp {
-    def run(args: List[String]): IO[ExitCode] = IO.never
+  object MainThreadReportFailure extends IOApp {
+
+    val exitCode = new AtomicReference[ExitCode](ExitCode.Error)
+
+    override def reportFailure(err: Throwable): IO[Unit] =
+      IO(exitCode.set(ExitCode.Success))
+
+    def run(args: List[String]): IO[ExitCode] =
+      IO.raiseError(new Exception).startOn(MainThread) *>
+        IO.sleep(1.second) *> IO(exitCode.get)
+
+  }
+
+  object MainThreadReportFailureRunnable extends IOApp {
+
+    val exitCode = new AtomicReference[ExitCode](ExitCode.Error)
+
+    override def reportFailure(err: Throwable): IO[Unit] =
+      IO(exitCode.set(ExitCode.Success))
+
+    def run(args: List[String]): IO[ExitCode] =
+      IO(MainThread.execute(() => throw new Exception)) *>
+        IO.sleep(1.second) *> IO(exitCode.get)
+
+  }
+
+  object BlockedThreads extends IOApp.Simple {
+
+    override protected def blockedThreadDetectionEnabled = true
+
+    // Loop prevents other worker threads from being parked and hence not
+    // performing the blocked check. Cedeing makes the test more deterministic
+    val run =
+      IO.cede.foreverM.start >> IO(Thread.sleep(2.seconds.toMillis))
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@
 package cats.effect
 package unsafe
 
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration.{Duration, FiniteDuration}
 import scala.util.Try
 
 private[unsafe] abstract class IORuntimeConfigCompanionPlatform { this: IORuntimeConfig.type =>
@@ -48,11 +48,40 @@ private[unsafe] abstract class IORuntimeConfigCompanionPlatform { this: IORuntim
       .flatMap(x => Try(Duration(x)).toOption)
       .getOrElse(DefaultShutdownHookTimeout)
 
+    val reportUnhandledFiberErrors = process
+      .env("CATS_EFFECT_REPORT_UNHANDLED_FIBER_ERRORS")
+      .flatMap(x => Try(x.toBoolean).toOption)
+      .getOrElse(DefaultReportUnhandledFiberErrors)
+
+    val cpuStarvationCheckInterval =
+      process
+        .env("CATS_EFFECT_CPU_STARVATION_CHECK_INTERVAL")
+        .map(Duration(_))
+        .flatMap { d => Try(d.asInstanceOf[FiniteDuration]).toOption }
+        .getOrElse(DefaultCpuStarvationCheckInterval)
+
+    val cpuStarvationCheckInitialDelay =
+      process
+        .env("CATS_EFFECT_CPU_STARVATION_CHECK_INITIAL_DELAY")
+        .map(Duration(_))
+        .getOrElse(DefaultCpuStarvationCheckInitialDelay)
+
+    val cpuStarvationCheckThreshold =
+      process
+        .env("CATS_EFFECT_CPU_STARVATION_CHECK_THRESHOLD")
+        .flatMap(p => Try(p.toDouble).toOption)
+        .getOrElse(DefaultCpuStarvationCheckThreshold)
+
     apply(
       cancelationCheckThreshold,
       autoYieldThreshold,
       enhancedExceptions,
       traceBufferSize,
-      shutdownHookTimeout)
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold
+    )
   }
 }

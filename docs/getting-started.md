@@ -6,13 +6,19 @@ title: Getting Started
 Add the following to your **build.sbt**:
 
 ```scala
-libraryDependencies += "org.typelevel" %% "cats-effect" % "3.3.4"
+libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.0"
 ```
 
 Naturally, if you're using ScalaJS, you should replace the double `%%` with a triple `%%%`. If you're on Scala 2, it is *highly* recommended that you enable the [better-monadic-for](https://github.com/oleg-py/better-monadic-for) plugin, which fixes a number of surprising elements of the `for`-comprehension syntax in the Scala language:
 
 ```scala
 addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.3.1")
+```
+
+It is recommended to enable warnings for non-unit statements (see [FAQ](./faq.md#what-do-non-unit-statement-warnings-mean)):
+
+```scala
+scalacOptions += "-Wnonunit-statement"
 ```
 
 Alternatively, you can use the Cats Effect 3 Giter8 template, which sets up some basic project infrastructure:
@@ -62,7 +68,7 @@ We will learn more about constructs like `start` and `*>` in later pages, but fo
 Of course, the easiest way to play with Cats Effect is to try it out in a Scala REPL. We recommend using [Ammonite](https://ammonite.io/#Ammonite-REPL) for this kind of thing. To get started, run the following lines (if not using Ammonite, skip the first line and make sure that Cats Effect and its dependencies are correctly configured on the classpath):
 
 ```scala
-import $ivy.`org.typelevel::cats-effect:3.3.4`
+import $ivy.`org.typelevel::cats-effect:3.7.0`
 
 import cats.effect.unsafe.implicits._
 import cats.effect.IO
@@ -72,6 +78,20 @@ program.unsafeRunSync()
 ```
 
 Congratulations, you've just run your first `IO` within the REPL! The `unsafeRunSync()` function is not meant to be used within a normal application. As the name suggests, its implementation is unsafe in several ways, but it is very useful for REPL-based experimentation and sometimes useful for testing.
+
+### Cancelling a long-running REPL task
+
+`unsafeRunCancelable()` is another variant to launch a task, that allows a long-running task to be cancelled. This can be useful to clean up long or infinite tasks that have been spawned from the REPL.
+
+```scala
+import cats.effect.unsafe.implicits._
+import cats.effect.IO
+
+lazy val loop: IO[Unit] = IO.println("loop until cancel..") >> IO.sleep(2.seconds) >> loop
+val cancel = loop.unsafeRunCancelable()
+```
+
+`unsafeRunCancelable` starts the loop task running, but also emits an invocable handle value which when invoked (ie `cancel()`) cancels the loop. This can be useful when running in SBT with the `console` command, where by default terminating the REPL doesn't terminate the process, and thus the task will remain executing in the background.
 
 ## Testing
 
@@ -102,15 +122,14 @@ class ExampleSuite extends CatsEffectSuite {
 
 ### Weaver-test
 
-[![weaver-cats Scala version support](https://index.scala-lang.org/disneystreaming/weaver-test/weaver-cats/latest-by-scala-version.svg)](https://index.scala-lang.org/disneystreaming/weaver-test/weaver-cats)
+[![weaver-cats Scala version support](https://index.scala-lang.org/typelevel/weaver-test/weaver-cats/latest-by-scala-version.svg)](https://index.scala-lang.org/typelevel/weaver-test/weaver-cats)
 
-[Weaver](https://github.com/disneystreaming/weaver-test) is a test-framework built directly on top of Cats Effect. It is designed specifically to handle thousands of tests exercising I/O layers (http, database calls) concurrently. Weaver makes heavy use of the concurrency constructs and abstractions provided by Cats Effect to safely share resources (clients) across tests and suite, and runs all tests in parallel by default.
+[Weaver](https://github.com/typelevel/weaver-test) is a test-framework built directly on top of Cats Effect. It is designed specifically to handle thousands of tests exercising I/O layers (http, database calls) concurrently. Weaver makes heavy use of the concurrency constructs and abstractions provided by Cats Effect to safely share resources (clients) across tests and suite, and runs all tests in parallel by default.
 
 To get started, add the following to your **build.sbt**:
 
 ```scala
-libraryDependencies += "com.disneystreaming" %% "weaver-cats" % "0.7.6" % Test
-testFrameworks += new TestFramework("weaver.framework.CatsEffect")
+libraryDependencies += "org.typelevel" %% "weaver-cats" % "0.10.1" % Test
 ```
 
 Similarly to MUnit, this setup allows you to write your tests directly against `IO`.

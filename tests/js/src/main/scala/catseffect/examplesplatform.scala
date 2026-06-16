@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,31 +19,50 @@ package catseffect
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.syntax.all._
 
+import org.scalajs.macrotaskexecutor.MacrotaskExecutor
+
 import scala.annotation.nowarn
 import scala.collection.mutable
 import scala.concurrent.duration.Duration
 import scala.scalajs.js
 
+package object examples {
+  def exampleExecutionContext = MacrotaskExecutor
+}
+
 package examples {
 
   object JSRunner {
-    val apps = mutable.Map.empty[String, IOApp]
-    def register(app: IOApp): Unit = apps(app.getClass.getName.init) = app
+    val apps = mutable.Map.empty[String, () => IOApp]
+    def register(app: IOApp): Unit = apps(app.getClass.getName.init) = () => app
+    def registerLazy(name: String, app: => IOApp): Unit =
+      apps(name) = () => app
+
+    val rawApps = mutable.Map.empty[String, () => RawApp]
+    def registerRaw(app: RawApp): Unit = rawApps(app.getClass.getName.init) = () => app
 
     register(HelloWorld)
     register(Arguments)
     register(NonFatalError)
     register(FatalError)
+    register(RaiseFatalErrorAttempt)
+    register(RaiseFatalErrorHandle)
+    register(RaiseFatalErrorMap)
+    register(RaiseFatalErrorFlatMap)
+    registerRaw(FatalErrorRaw)
     register(Canceled)
-    register(GlobalRacingInit)
+    registerLazy("catseffect.examples.GlobalRacingInit", GlobalRacingInit)
+    registerLazy("catseffect.examples.GlobalShutdown", GlobalShutdown)
     register(ShutdownHookImmediateTimeout)
     register(LiveFiberSnapshot)
     register(FatalErrorUnsafeRun)
     register(Finalizers)
     register(LeakedFiber)
     register(UndefinedProcessExit)
+    register(CustomRuntime)
+    register(CpuStarvation)
 
-    @nowarn("cat=unused")
+    @nowarn("msg=never used")
     def main(paperweight: Array[String]): Unit = {
       val args = js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]]
       val app = args(2)
@@ -51,7 +70,11 @@ package examples {
         // emulates the situation in browsers
         js.Dynamic.global.process.exit = js.undefined
       args.shift()
-      apps(app).main(Array.empty)
+      apps
+        .get(app)
+        .map(_().main(Array.empty))
+        .orElse(rawApps.get(app).map(_().main(Array.empty)))
+        .get
     }
   }
 
@@ -86,4 +109,5 @@ package examples {
   object UndefinedProcessExit extends IOApp {
     def run(args: List[String]): IO[ExitCode] = IO.pure(ExitCode.Success)
   }
+
 }

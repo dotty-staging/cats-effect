@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -63,7 +63,7 @@ import cats.syntax.all._
  *   1. A1, B1, B2, A2
  *   1. B1, B2, A1, A2
  *   1. B1, A1, B2, A2
- *   1. B1, A1, A2, B3
+ *   1. B1, A1, A2, B2
  *
  * Notice how every execution preserves sequential consistency of the effects within each fiber:
  * `A1` always prints before `A2`, and `B1` always prints before `B2`. However, there are no
@@ -131,7 +131,7 @@ import cats.syntax.all._
  *
  * {{{
  *
- *   // Starts a fiber that continously prints "A".
+ *   // Starts a fiber that continuously prints "A".
  *   // After 10 seconds, the resource scope exits so the fiber is canceled.
  *   F.background(F.delay(println("A")).foreverM).use { _ =>
  *     F.sleep(10.seconds)
@@ -202,7 +202,7 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
    *
    * {{{
    *
-   *   // Starts a fiber that continously prints "A".
+   *   // Starts a fiber that continuously prints "A".
    *   // After 10 seconds, the resource scope exits so the fiber is canceled.
    *   F.background(F.delay(println("A")).foreverM).use { _ =>
    *     F.sleep(10.seconds)
@@ -215,6 +215,60 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
    */
   def background[A](fa: F[A]): Resource[F, F[Outcome[F, E, A]]] =
     Resource.make(start(fa))(_.cancel)(this).map(_.join)
+
+  /**
+   * Given an effect which might be [[uncancelable]] and a finalizer, produce an effect which
+   * can be canceled by running the finalizer. This combinator is useful for handling scenarios
+   * in which an effect is inherently uncancelable but may be canceled through setting some
+   * external state. A trivial example of this might be the following (assuming an [[Async]]
+   * instance):
+   *
+   * {{{
+   *   val flag = new AtomicBoolean(false)
+   *   val fa = F blocking {
+   *     while (!flag.get()) {
+   *       Thread.sleep(10)
+   *     }
+   *   }
+   *
+   *   F.cancelable(fa, F.delay(flag.set(true)))
+   * }}}
+   *
+   * Without `cancelable`, effects constructed by `blocking`, `delay`, and similar are
+   * inherently uncancelable. Simply adding an `onCancel` to such effects is insufficient to
+   * resolve this, despite the fact that under *some* circumstances (such as the above), it is
+   * possible to enrich an otherwise-uncancelable effect with early termination. `cancelable`
+   * addresses this use-case.
+   *
+   * Note that there is no free lunch here. If an effect truly cannot be prematurely terminated,
+   * `cancelable` will not allow for cancelation. As an example, if you attempt to cancel
+   * `uncancelable(_ => never)`, the cancelation will hang forever (in other words, it will be
+   * itself equivalent to `never`). Applying `cancelable` will not change this in any way. Thus,
+   * attempting to cancel `cancelable(uncancelable(_ => never), unit)` will ''also'' hang
+   * forever. As in all cases, cancelation will only return when all finalizers have run and the
+   * fiber has fully terminated.
+   *
+   * If `fa` self-cancels and the `cancelable` itself is uncancelable, the resulting fiber will
+   * be equal to `never` (similar to [[race]]). Under normal circumstances, if `fa`
+   * self-cancels, that cancelation will be propagated to the calling context.
+   *
+   * @param fa
+   *   the effect to be canceled
+   * @param fin
+   *   an effect which orchestrates some external state which terminates `fa`
+   * @see
+   *   [[uncancelable]]
+   * @see
+   *   [[onCancel]]
+   */
+  def cancelable[A](fa: F[A], fin: F[Unit]): F[A] =
+    uncancelable { poll =>
+      start(fa) flatMap { fiber =>
+        poll(fiber.join)
+          .onCancel(fin.guarantee(fiber.cancel))
+          .flatMap(_.embed(poll(canceled *> never)))
+      }
+    }
 
   /**
    * A non-terminating effect that never completes, which causes a fiber to semantically block
@@ -245,6 +299,35 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
   /**
    * Introduces a fairness boundary that yields control back to the scheduler of the runtime
    * system. This allows the carrier thread to resume execution of another waiting fiber.
+   *
+   * This function is primarily useful when performing long-running computation that is outside
+   * of the monadic context. For example:
+   *
+   * {{{
+   *   fa.map(data => expensiveWork(data))
+   * }}}
+   *
+   * In the above, we're assuming that `expensiveWork` is a function which is entirely
+   * compute-bound but very long-running. A good rule of thumb is to consider a function
+   * "expensive" when its runtime is around three or more orders of magnitude higher than the
+   * overhead of the `map` function itself (which runs in around 5 nanoseconds on modern
+   * hardware). Thus, any `expensiveWork` function which requires around 10 microseconds or
+   * longer to execute should be considered "long-running".
+   *
+   * The danger is that these types of long-running actions outside of the monadic context can
+   * result in degraded fairness properties. The solution is to add an explicit `cede` both
+   * before and after the expensive operation:
+   *
+   * {{{
+   *   (fa <* F.cede).map(data => expensiveWork(data)).guarantee(F.cede)
+   * }}}
+   *
+   * Note that extremely long-running `expensiveWork` functions can still cause fairness issues,
+   * even when used with `cede`. This problem is somewhat fundamental to the nature of
+   * scheduling such computation on carrier threads. Whenever possible, it is best to break
+   * apart any such functions into multiple pieces invoked independently (e.g. via chained `map`
+   * calls) whenever the execution time exceeds five or six orders of magnitude beyond the
+   * overhead of `map` itself (around 1 millisecond on most hardware).
    *
    * Note that `cede` is merely a hint to the runtime system; implementations have the liberty
    * to interpret this method to their liking as long as it obeys the respective laws. For
@@ -323,7 +406,7 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
             case Outcome.Succeeded(fa) => f.cancel *> fa.map(Left(_))
             case Outcome.Errored(ea) => f.cancel *> raiseError(ea)
             case Outcome.Canceled() =>
-              poll(f.join).onCancel(f.cancel).flatMap {
+              f.cancel *> f.join flatMap {
                 case Outcome.Succeeded(fb) => fb.map(Right(_))
                 case Outcome.Errored(eb) => raiseError(eb)
                 case Outcome.Canceled() => poll(canceled) *> never
@@ -334,7 +417,7 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
             case Outcome.Succeeded(fb) => f.cancel *> fb.map(Right(_))
             case Outcome.Errored(eb) => f.cancel *> raiseError(eb)
             case Outcome.Canceled() =>
-              poll(f.join).onCancel(f.cancel).flatMap {
+              f.cancel *> f.join flatMap {
                 case Outcome.Succeeded(fa) => fa.map(Left(_))
                 case Outcome.Errored(ea) => raiseError(ea)
                 case Outcome.Canceled() => poll(canceled) *> never
@@ -358,7 +441,7 @@ trait GenSpawn[F[_], E] extends MonadCancel[F, E] with Unique[F] {
    */
   def bothOutcome[A, B](fa: F[A], fb: F[B]): F[(Outcome[F, E, A], Outcome[F, E, B])] =
     uncancelable { poll =>
-      racePair(fa, fb).flatMap {
+      poll(racePair(fa, fb)).flatMap {
         case Left((oc, f)) => poll(f.join).onCancel(f.cancel).tupleLeft(oc)
         case Right((f, oc)) => poll(f.join).onCancel(f.cancel).tupleRight(oc)
       }
@@ -427,46 +510,104 @@ object GenSpawn {
   }
 
   def apply[F[_], E](implicit F: GenSpawn[F, E]): F.type = F
-  def apply[F[_]](implicit F: GenSpawn[F, _], d: DummyImplicit): F.type = F
+  def apply[F[_]](implicit F: GenSpawn[F, ?], d: DummyImplicit): F.type = F
 
   implicit def genSpawnForOptionT[F[_], E](
       implicit F0: GenSpawn[F, E]): GenSpawn[OptionT[F, *], E] =
-    new OptionTGenSpawn[F, E] {
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForOptionT[F](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForOptionT[F, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForOptionT[F, E](concurrent)
+      case spawn =>
+        instantiateGenSpawnForOptionT(spawn)
+    }
 
+  private[kernel] def instantiateGenSpawnForOptionT[F[_], E](
+      F0: GenSpawn[F, E]): OptionTGenSpawn[F, E] =
+    new OptionTGenSpawn[F, E] {
       override implicit protected def F: GenSpawn[F, E] = F0
     }
 
   implicit def genSpawnForEitherT[F[_], E0, E](
       implicit F0: GenSpawn[F, E]): GenSpawn[EitherT[F, E0, *], E] =
-    new EitherTGenSpawn[F, E0, E] {
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForEitherT[F, E0](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForEitherT[F, E0, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForEitherT[F, E0, E](concurrent)
+      case spawn =>
+        instantiateGenSpawnForEitherT(spawn)
+    }
 
+  private[kernel] def instantiateGenSpawnForEitherT[F[_], E0, E](
+      F0: GenSpawn[F, E]): EitherTGenSpawn[F, E0, E] =
+    new EitherTGenSpawn[F, E0, E] {
       override implicit protected def F: GenSpawn[F, E] = F0
     }
 
   implicit def genSpawnForKleisli[F[_], R, E](
       implicit F0: GenSpawn[F, E]): GenSpawn[Kleisli[F, R, *], E] =
-    new KleisliGenSpawn[F, R, E] {
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForKleisli[F, R](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForKleisli[F, R, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForKleisli[F, R, E](concurrent)
+      case spawn =>
+        instantiateGenSpawnForKleisli(spawn)
+    }
 
+  private[kernel] def instantiateGenSpawnForKleisli[F[_], R, E](
+      F0: GenSpawn[F, E]): KleisliGenSpawn[F, R, E] =
+    new KleisliGenSpawn[F, R, E] {
       override implicit protected def F: GenSpawn[F, E] = F0
     }
 
   implicit def genSpawnForIorT[F[_], L, E](
       implicit F0: GenSpawn[F, E],
       L0: Semigroup[L]): GenSpawn[IorT[F, L, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForIorT[F, L](async, L0)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForIorT[F, L, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForIorT[F, L, E](concurrent)
+      case spawn =>
+        instantiateGenSpawnForIorT(spawn)
+    }
+
+  private[kernel] def instantiateGenSpawnForIorT[F[_], L, E](F0: GenSpawn[F, E])(
+      implicit L0: Semigroup[L]): IorTGenSpawn[F, L, E] =
     new IorTGenSpawn[F, L, E] {
-
       override implicit protected def F: GenSpawn[F, E] = F0
-
       override implicit protected def L: Semigroup[L] = L0
     }
 
   implicit def genSpawnForWriterT[F[_], L, E](
       implicit F0: GenSpawn[F, E],
       L0: Monoid[L]): GenSpawn[WriterT[F, L, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForWriterT[F, L](async, L0)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForWriterT[F, L, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForWriterT[F, L, E](concurrent)
+      case spawn =>
+        instantiateGenSpawnForWriterT(spawn)
+    }
+
+  private[kernel] def instantiateGenSpawnForWriterT[F[_], L, E](F0: GenSpawn[F, E])(
+      implicit L0: Monoid[L]): WriterTGenSpawn[F, L, E] =
     new WriterTGenSpawn[F, L, E] {
-
       override implicit protected def F: GenSpawn[F, E] = F0
-
       override implicit protected def L: Monoid[L] = L0
     }
 
@@ -666,7 +807,7 @@ object GenSpawn {
       Kleisli.liftF(F.unique)
 
     def start[A](fa: Kleisli[F, R, A]): Kleisli[F, R, Fiber[Kleisli[F, R, *], E, A]] =
-      Kleisli { r => (F.start(fa.run(r)).map(liftFiber)) }
+      Kleisli { r => F.start(fa.run(r)).map(liftFiber) }
 
     def never[A]: Kleisli[F, R, A] = Kleisli.liftF(F.never)
 
@@ -680,7 +821,7 @@ object GenSpawn {
         (Fiber[Kleisli[F, R, *], E, A], Outcome[Kleisli[F, R, *], E, B])]] = {
       Kleisli { r =>
         F.uncancelable(poll =>
-          poll((F.racePair(fa.run(r), fb.run(r))).map {
+          poll(F.racePair(fa.run(r), fb.run(r)).map {
             case Left((oc, fib)) => Left((liftOutcome(oc), liftFiber(fib)))
             case Right((fib, oc)) => Right((liftFiber(fib), liftOutcome(oc)))
           }))

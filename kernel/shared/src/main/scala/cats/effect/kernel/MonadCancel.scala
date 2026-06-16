@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -88,7 +88,7 @@ import cats.syntax.all._
  * These semantics allow users to precisely mark what regions of code are cancelable within a
  * larger code block.
  *
- * ==Cancelation Boundaries===
+ * ==Cancelation Boundaries==
  *
  * A boundary corresponds to an iteration of the internal runloop. In general they are
  * introduced by any of the combinators from the cats/cats effect hierarchy (`map`, `flatMap`,
@@ -128,7 +128,7 @@ import cats.syntax.all._
  *
  * None of the boundaries above are cancelation boundaries as cancelation is masked.
  *
- * 2. The boundary after `uncancelable`
+ *   2. The boundary after `uncancelable`
  *
  * {{{
  *   F.uncancelable(poll => foo(poll)).flatMap(f)
@@ -161,7 +161,7 @@ import cats.syntax.all._
  * always be awkward. Given this, it is better to pick a semantic that allows safe composition
  * of regions.
  *
- * 3. The boundary after `poll`
+ *   3. The boundary after `poll`
  *
  * {{{
  *   F.uncancelable(poll => poll(fa).flatMap(f))
@@ -257,8 +257,8 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
    *
    * Masks can also be stacked or nested within each other. If multiple masks are active, all
    * masks must be undone so that cancelation can be observed. In order to completely unmask
-   * within a multi-masked region, the poll corresponding to each mask must be applied,
-   * innermost-first.
+   * within a multi-masked region the poll corresponding to each mask must be applied to the
+   * effect, outermost-first.
    *
    * {{{
    *
@@ -273,7 +273,8 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
    * The following operations are no-ops:
    *
    *   1. Polling in the wrong order
-   *   1. Applying the same poll more than once: `poll(poll(fa))`
+   *   1. Subsequent polls when applying the same poll more than once: `poll(poll(fa))` is
+   *      equivalent to `poll(fa)`
    *   1. Applying a poll bound to one fiber within another fiber
    *
    * @param body
@@ -285,9 +286,12 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
   /**
    * An effect that requests self-cancelation on the current fiber.
    *
-   * In the following example, the fiber requests self-cancelation in a masked region, so
-   * cancelation is suppressed until the fiber is completely unmasked. `fa` will run but `fb`
-   * will not.
+   * `canceled` has a return type of `F[Unit]` instead of `F[Nothing]` due to execution
+   * continuing in a masked region. In the following example, the fiber requests
+   * self-cancelation in a masked region, so cancelation is suppressed until the fiber is
+   * completely unmasked. `fa` will run but `fb` will not. If `canceled` had a return type of
+   * `F[Nothing]`, then it would not be possible to continue execution to `fa` (there would be
+   * no `Nothing` value to pass to the `flatMap`).
    *
    * {{{
    *
@@ -304,15 +308,20 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
    * `fa`. If the evaluation of `fa` completes without encountering a cancelation, the finalizer
    * is unregistered before proceeding.
    *
+   * Note that if `fa` is uncancelable (e.g. created via [[uncancelable]]) then `fin` won't be
+   * fired.
+   *
+   * {{{
+   *   F.onCancel(F.uncancelable(_ => F.canceled), fin) <-> F.unit
+   * }}}
+   *
    * During finalization, all actively registered finalizers are run exactly once. The order by
    * which finalizers are run is dictated by nesting: innermost finalizers are run before
    * outermost finalizers. For example, in the following program, the finalizer `f1` is run
    * before the finalizer `f2`:
    *
    * {{{
-   *
    *   F.onCancel(F.onCancel(F.canceled, f1), f2)
-   *
    * }}}
    *
    * If a finalizer throws an error during evaluation, the error is suppressed, and
@@ -461,77 +470,136 @@ trait MonadCancel[F[_], E] extends MonadError[F, E] {
 object MonadCancel {
 
   def apply[F[_], E](implicit F: MonadCancel[F, E]): F.type = F
-  def apply[F[_]](implicit F: MonadCancel[F, _], d: DummyImplicit): F.type = F
+  def apply[F[_]](implicit F: MonadCancel[F, ?], d: DummyImplicit): F.type = F
 
   implicit def monadCancelForOptionT[F[_], E](
       implicit F0: MonadCancel[F, E]): MonadCancel[OptionT[F, *], E] =
-    new OptionTMonadCancel[F, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F: MonadCancel[F, E] = F0
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForOptionT[F](async)
+      case sync: Sync[F @unchecked] =>
+        Sync.instantiateSyncForOptionT[F](sync)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForOptionT[F, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForOptionT[F, E](concurrent)
+      case spawn: GenSpawn[F @unchecked, E @unchecked] =>
+        GenSpawn.instantiateGenSpawnForOptionT[F, E](spawn)
+      case cancel =>
+        new OptionTMonadCancel[F, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+        }
     }
 
   implicit def monadCancelForEitherT[F[_], E0, E](
       implicit F0: MonadCancel[F, E]): MonadCancel[EitherT[F, E0, *], E] =
-    new EitherTMonadCancel[F, E0, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F: MonadCancel[F, E] = F0
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForEitherT[F, E0](async)
+      case sync: Sync[F @unchecked] =>
+        Sync.instantiateSyncForEitherT[F, E0](sync)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForEitherT[F, E0, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForEitherT[F, E0, E](concurrent)
+      case spawn: GenSpawn[F @unchecked, E @unchecked] =>
+        GenSpawn.instantiateGenSpawnForEitherT[F, E0, E](spawn)
+      case cancel =>
+        new EitherTMonadCancel[F, E0, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+        }
     }
 
   implicit def monadCancelForKleisli[F[_], R, E](
       implicit F0: MonadCancel[F, E]): MonadCancel[Kleisli[F, R, *], E] =
-    new KleisliMonadCancel[F, R, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F: MonadCancel[F, E] = F0
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForKleisli[F, R](async)
+      case sync: Sync[F @unchecked] =>
+        Sync.instantiateSyncForKleisli[F, R](sync)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForKleisli[F, R, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForKleisli[F, R, E](concurrent)
+      case spawn: GenSpawn[F @unchecked, E @unchecked] =>
+        GenSpawn.instantiateGenSpawnForKleisli[F, R, E](spawn)
+      case cancel =>
+        new KleisliMonadCancel[F, R, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+        }
     }
 
   implicit def monadCancelForIorT[F[_], L, E](
       implicit F0: MonadCancel[F, E],
       L0: Semigroup[L]): MonadCancel[IorT[F, L, *], E] =
-    new IorTMonadCancel[F, L, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F: MonadCancel[F, E] = F0
-
-      override implicit protected def L: Semigroup[L] = L0
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForIorT[F, L](async, L0)
+      case sync: Sync[F @unchecked] =>
+        Sync.instantiateSyncForIorT[F, L](sync)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForIorT[F, L, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForIorT[F, L, E](concurrent)
+      case spawn: GenSpawn[F @unchecked, E @unchecked] =>
+        GenSpawn.instantiateGenSpawnForIorT[F, L, E](spawn)
+      case cancel =>
+        new IorTMonadCancel[F, L, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+          override implicit protected def L: Semigroup[L] = L0
+        }
     }
 
   implicit def monadCancelForWriterT[F[_], L, E](
       implicit F0: MonadCancel[F, E],
       L0: Monoid[L]): MonadCancel[WriterT[F, L, *], E] =
-    new WriterTMonadCancel[F, L, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F: MonadCancel[F, E] = F0
-
-      override implicit protected def L: Monoid[L] = L0
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForWriterT[F, L](async, L0)
+      case sync: Sync[F @unchecked] =>
+        Sync.instantiateSyncForWriterT[F, L](sync)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForWriterT[F, L, E](temporal)
+      case concurrent: GenConcurrent[F @unchecked, E @unchecked] =>
+        GenConcurrent.instantiateGenConcurrentForWriterT[F, L, E](concurrent)
+      case spawn: GenSpawn[F @unchecked, E @unchecked] =>
+        GenSpawn.instantiateGenSpawnForWriterT[F, L, E](spawn)
+      case cancel =>
+        new WriterTMonadCancel[F, L, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+          override implicit protected def L: Monoid[L] = L0
+        }
     }
 
   implicit def monadCancelForStateT[F[_], S, E](
       implicit F0: MonadCancel[F, E]): MonadCancel[StateT[F, S, *], E] =
-    new StateTMonadCancel[F, S, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F = F0
+    F0 match {
+      case sync: Sync[F @unchecked] =>
+        Sync.syncForStateT[F, S](sync)
+      case cancel =>
+        new StateTMonadCancel[F, S, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+        }
     }
 
   implicit def monadCancelForReaderWriterStateT[F[_], E0, L, S, E](
       implicit F0: MonadCancel[F, E],
       L0: Monoid[L]): MonadCancel[ReaderWriterStateT[F, E0, L, S, *], E] =
-    new ReaderWriterStateTMonadCancel[F, E0, L, S, E] {
-
-      def rootCancelScope = F0.rootCancelScope
-
-      override implicit protected def F = F0
-      override implicit protected def L = L0
+    F0 match {
+      case sync: Sync[F @unchecked] =>
+        Sync.syncForReaderWriterStateT[F, E0, L, S](sync, L0)
+      case cancel =>
+        new ReaderWriterStateTMonadCancel[F, E0, L, S, E] {
+          def rootCancelScope = F0.rootCancelScope
+          override implicit protected def F: MonadCancel[F, E] = cancel
+          override implicit protected def L: Monoid[L] = L0
+        }
     }
 
   trait Uncancelable[F[_], E] { this: MonadCancel[F, E] =>

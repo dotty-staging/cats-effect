@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package cats.effect.kernel
 
-import cats.{Monoid, Semigroup, Traverse}
+import cats.{Foldable, Monoid, Semigroup, Traverse}
 import cats.data.{EitherT, IorT, Kleisli, OptionT, WriterT}
 import cats.effect.kernel.instances.spawn._
 import cats.effect.kernel.syntax.all._
@@ -45,40 +45,69 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     implicit val F: GenConcurrent[F, E] = this
 
     ref[Memoize[F, E, A]](Unevaluated()) map { state =>
-      def eval: F[A] =
-        deferred[Unit] flatMap { latch =>
-          uncancelable { poll =>
-            state.modify {
-              case Unevaluated() =>
-                val go =
-                  poll(fa).guaranteeCase { outcome =>
-                    val stateAction = outcome match {
-                      case Outcome.Canceled() =>
-                        state.set(Unevaluated())
-                      case Outcome.Errored(err) =>
-                        state.set(Finished(Left(err)))
-                      case Outcome.Succeeded(fa) =>
-                        state.set(Finished(Right(fa)))
-                    }
-                    stateAction <* latch.complete(())
+      // start running the effect, or subscribe if it already is
+      def evalOrSubscribe: F[A] =
+        deferred[Fiber[F, E, A]] flatMap { deferredFiber =>
+          state.flatModifyFull {
+            case (poll, Unevaluated()) =>
+              // run the effect, and if this fiber is still relevant set its result
+              val go = {
+                def tryComplete(result: Memoize[F, E, A]): F[Unit] = state.update {
+                  case Evaluating(fiber, _) if fiber eq deferredFiber =>
+                    // we are the blessed fiber of this memo
+                    result
+                  case other => // our outcome is no longer relevant
+                    other
+                }
+
+                fa
+                  // hack around functor law breakage
+                  .flatMap(F.pure(_))
+                  .handleErrorWith(F.raiseError(_))
+                  // end hack
+                  .guaranteeCase {
+                    case Outcome.Canceled() =>
+                      tryComplete(Finished(Right(productR(canceled)(never))))
+                    case Outcome.Errored(err) =>
+                      tryComplete(Finished(Left(err)))
+                    case Outcome.Succeeded(fa) =>
+                      tryComplete(Finished(Right(fa)))
                   }
+              }
 
-                Evaluating(latch.get) -> go
+              val eval = go.start.flatMap { fiber =>
+                deferredFiber.complete(fiber) *>
+                  poll(fiber.join.flatMap(_.embed(productR(canceled)(never))))
+                    .onCancel(unsubscribe(deferredFiber))
+              }
 
-              case other =>
-                other -> poll(get)
-            }.flatten
+              Evaluating(deferredFiber, 1) -> eval
+
+            case (poll, Evaluating(fiber, subscribers)) =>
+              Evaluating(fiber, subscribers + 1) ->
+                poll(fiber.get.flatMap(_.join).flatMap(_.embed(productR(canceled)(never))))
+                  .onCancel(unsubscribe(fiber))
+
+            case (_, finished @ Finished(result)) =>
+              finished -> fromEither(result).flatten
           }
         }
 
-      def get: F[A] =
-        state.get flatMap {
-          case Unevaluated() => eval
-          case Evaluating(await) => await *> get
-          case Finished(efa) => fromEither(efa).flatten
-        }
+      def unsubscribe(expected: Deferred[F, Fiber[F, E, A]]): F[Unit] =
+        state.modify {
+          case Evaluating(fiber, subscribers) if fiber eq expected =>
+            if (subscribers == 1) // we are the last subscriber to this fiber
+              Unevaluated() -> fiber.get.flatMap(_.cancel)
+            else
+              Evaluating(fiber, subscribers - 1) -> unit
+          case other =>
+            other -> unit
+        }.flatten
 
-      get
+      state.get.flatMap {
+        case Finished(result) => fromEither(result).flatten
+        case _ => evalOrSubscribe
+      }
     }
   }
 
@@ -95,6 +124,12 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     parTraverseN(n)(tma)(identity)
 
   /**
+   * Like `Parallel.parSequence_`, but limits the degree of parallelism.
+   */
+  def parSequenceN_[T[_]: Foldable, A](n: Int)(tma: T[F[A]]): F[Unit] =
+    parTraverseN_(n)(tma)(identity)
+
+  /**
    * Like `Parallel.parTraverse`, but limits the degree of parallelism. Note that the semantics
    * of this operation aim to maximise fairness: when a spot to execute becomes available, every
    * task has a chance to claim it, and not only the next `n` tasks in `ta`
@@ -105,6 +140,19 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     implicit val F: GenConcurrent[F, E] = this
 
     MiniSemaphore[F](n).flatMap { sem => ta.parTraverse { a => sem.withPermit(f(a)) } }
+  }
+
+  /**
+   * Like `Parallel.parTraverse_`, but limits the degree of parallelism. Note that the semantics
+   * of this operation aim to maximise fairness: when a spot to execute becomes available, every
+   * task has a chance to claim it, and not only the next `n` tasks in `ta`
+   */
+  def parTraverseN_[T[_]: Foldable, A, B](n: Int)(ta: T[A])(f: A => F[B]): F[Unit] = {
+    require(n >= 1, s"Concurrency limit should be at least 1, was: $n")
+
+    implicit val F: GenConcurrent[F, E] = this
+
+    MiniSemaphore[F](n).flatMap { sem => ta.parTraverse_ { a => sem.withPermit(f(a)) } }
   }
 
   override def racePair[A, B](fa: F[A], fb: F[B])
@@ -138,29 +186,65 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
 
 object GenConcurrent {
   def apply[F[_], E](implicit F: GenConcurrent[F, E]): F.type = F
-  def apply[F[_]](implicit F: GenConcurrent[F, _], d: DummyImplicit): F.type = F
+  def apply[F[_]](implicit F: GenConcurrent[F, ?], d: DummyImplicit): F.type = F
 
   private sealed abstract class Memoize[F[_], E, A]
   private object Memoize {
     final case class Unevaluated[F[_], E, A]() extends Memoize[F, E, A]
-    final case class Evaluating[F[_], E, A](await: F[Unit]) extends Memoize[F, E, A]
+    final case class Evaluating[F[_], E, A](
+        fiber: Deferred[F, Fiber[F, E, A]],
+        subscribers: Long
+    ) extends Memoize[F, E, A]
     final case class Finished[F[_], E, A](result: Either[E, F[A]]) extends Memoize[F, E, A]
   }
 
   implicit def genConcurrentForOptionT[F[_], E](
       implicit F0: GenConcurrent[F, E]): GenConcurrent[OptionT[F, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForOptionT[F](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForOptionT[F, E](temporal)
+      case concurrent =>
+        instantiateGenConcurrentForOptionT(concurrent)
+    }
+
+  private[kernel] def instantiateGenConcurrentForOptionT[F[_], E](
+      F0: GenConcurrent[F, E]): OptionTGenConcurrent[F, E] =
     new OptionTGenConcurrent[F, E] {
       override implicit protected def F: GenConcurrent[F, E] = F0
     }
 
   implicit def genConcurrentForEitherT[F[_], E0, E](
       implicit F0: GenConcurrent[F, E]): GenConcurrent[EitherT[F, E0, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForEitherT[F, E0](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForEitherT[F, E0, E](temporal)
+      case concurrent =>
+        instantiateGenConcurrentForEitherT(concurrent)
+    }
+
+  private[kernel] def instantiateGenConcurrentForEitherT[F[_], E0, E](
+      F0: GenConcurrent[F, E]): EitherTGenConcurrent[F, E0, E] =
     new EitherTGenConcurrent[F, E0, E] {
       override implicit protected def F: GenConcurrent[F, E] = F0
     }
 
   implicit def genConcurrentForKleisli[F[_], R, E](
       implicit F0: GenConcurrent[F, E]): GenConcurrent[Kleisli[F, R, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForKleisli[F, R](async)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForKleisli[F, R, E](temporal)
+      case concurrent =>
+        instantiateGenConcurrentForKleisli(concurrent)
+    }
+
+  private[kernel] def instantiateGenConcurrentForKleisli[F[_], R, E](
+      F0: GenConcurrent[F, E]): KleisliGenConcurrent[F, R, E] =
     new KleisliGenConcurrent[F, R, E] {
       override implicit protected def F: GenConcurrent[F, E] = F0
     }
@@ -168,18 +252,38 @@ object GenConcurrent {
   implicit def genConcurrentForIorT[F[_], L, E](
       implicit F0: GenConcurrent[F, E],
       L0: Semigroup[L]): GenConcurrent[IorT[F, L, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForIorT[F, L](async, L0)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForIorT[F, L, E](temporal)
+      case concurrent =>
+        instantiateGenConcurrentForIorT(concurrent)
+    }
+
+  private[kernel] def instantiateGenConcurrentForIorT[F[_], L, E](F0: GenConcurrent[F, E])(
+      implicit L0: Semigroup[L]): IorTGenConcurrent[F, L, E] =
     new IorTGenConcurrent[F, L, E] {
       override implicit protected def F: GenConcurrent[F, E] = F0
-
       override implicit protected def L: Semigroup[L] = L0
     }
 
   implicit def genConcurrentForWriterT[F[_], L, E](
       implicit F0: GenConcurrent[F, E],
       L0: Monoid[L]): GenConcurrent[WriterT[F, L, *], E] =
+    F0 match {
+      case async: Async[F @unchecked] =>
+        Async.asyncForWriterT[F, L](async, L0)
+      case temporal: GenTemporal[F @unchecked, E @unchecked] =>
+        GenTemporal.instantiateGenTemporalForWriterT[F, L, E](temporal)
+      case concurrent =>
+        instantiateGenConcurrentForWriterT(concurrent)
+    }
+
+  private[kernel] def instantiateGenConcurrentForWriterT[F[_], L, E](F0: GenConcurrent[F, E])(
+      implicit L0: Monoid[L]): WriterTGenConcurrent[F, L, E] =
     new WriterTGenConcurrent[F, L, E] {
       override implicit protected def F: GenConcurrent[F, E] = F0
-
       override implicit protected def L: Monoid[L] = L0
     }
 

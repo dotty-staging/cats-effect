@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,23 @@ final case class IORuntimeConfig private (
     val autoYieldThreshold: Int,
     val enhancedExceptions: Boolean,
     val traceBufferSize: Int,
-    val shutdownHookTimeout: Duration) {
+    val shutdownHookTimeout: Duration,
+    val reportUnhandledFiberErrors: Boolean,
+    val cpuStarvationCheckInterval: FiniteDuration,
+    val cpuStarvationCheckInitialDelay: Duration,
+    val cpuStarvationCheckThreshold: Double) {
+
+  require(autoYieldThreshold > 1, s"Auto yield threshold $autoYieldThreshold must be > 1")
+  require(
+    cancelationCheckThreshold > 0,
+    s"Cancelation check threshold $cancelationCheckThreshold must be > 0")
+  require(
+    (autoYieldThreshold % cancelationCheckThreshold) == 0,
+    s"Auto yield threshold $autoYieldThreshold must be a multiple of cancelation check threshold $cancelationCheckThreshold"
+  )
+  require(
+    cpuStarvationCheckThreshold > 0,
+    s"CPU starvation check threshold $cpuStarvationCheckThreshold must be > 0")
 
   private[unsafe] def this(cancelationCheckThreshold: Int, autoYieldThreshold: Int) =
     this(
@@ -32,20 +48,53 @@ final case class IORuntimeConfig private (
       autoYieldThreshold,
       IORuntimeConfig.DefaultEnhancedExceptions,
       IORuntimeConfig.DefaultTraceBufferSize,
-      IORuntimeConfig.DefaultShutdownHookTimeout)
+      IORuntimeConfig.DefaultShutdownHookTimeout,
+      IORuntimeConfig.DefaultReportUnhandledFiberErrors,
+      IORuntimeConfig.DefaultCpuStarvationCheckInterval,
+      IORuntimeConfig.DefaultCpuStarvationCheckInitialDelay,
+      IORuntimeConfig.DefaultCpuStarvationCheckThreshold
+    )
 
   def copy(
       cancelationCheckThreshold: Int = this.cancelationCheckThreshold,
       autoYieldThreshold: Int = this.autoYieldThreshold,
       enhancedExceptions: Boolean = this.enhancedExceptions,
       traceBufferSize: Int = this.traceBufferSize,
-      shutdownHookTimeout: Duration = this.shutdownHookTimeout): IORuntimeConfig =
+      shutdownHookTimeout: Duration = this.shutdownHookTimeout,
+      reportUnhandledFiberErrors: Boolean = this.reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval: FiniteDuration = this.cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay: Duration = this.cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold: Double = this.cpuStarvationCheckThreshold
+  ): IORuntimeConfig =
     new IORuntimeConfig(
       cancelationCheckThreshold,
       autoYieldThreshold,
       enhancedExceptions,
       traceBufferSize,
-      shutdownHookTimeout)
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold
+    )
+
+  private[unsafe] def copy(
+      cancelationCheckThreshold: Int,
+      autoYieldThreshold: Int,
+      enhancedExceptions: Boolean,
+      traceBufferSize: Int,
+      shutdownHookTimeout: Duration): IORuntimeConfig =
+    new IORuntimeConfig(
+      cancelationCheckThreshold,
+      autoYieldThreshold,
+      enhancedExceptions,
+      traceBufferSize,
+      shutdownHookTimeout,
+      IORuntimeConfig.DefaultReportUnhandledFiberErrors,
+      IORuntimeConfig.DefaultCpuStarvationCheckInterval,
+      IORuntimeConfig.DefaultCpuStarvationCheckInitialDelay,
+      IORuntimeConfig.DefaultCpuStarvationCheckThreshold
+    )
 
   // shims for binary compat
   private[unsafe] def this(
@@ -58,7 +107,31 @@ final case class IORuntimeConfig private (
       autoYieldThreshold,
       enhancedExceptions,
       traceBufferSize,
-      IORuntimeConfig.DefaultShutdownHookTimeout)
+      IORuntimeConfig.DefaultShutdownHookTimeout,
+      IORuntimeConfig.DefaultReportUnhandledFiberErrors,
+      IORuntimeConfig.DefaultCpuStarvationCheckInterval,
+      IORuntimeConfig.DefaultCpuStarvationCheckInitialDelay,
+      IORuntimeConfig.DefaultCpuStarvationCheckThreshold
+    )
+
+  // shims for binary compat
+  private[unsafe] def this(
+      cancelationCheckThreshold: Int,
+      autoYieldThreshold: Int,
+      enhancedExceptions: Boolean,
+      traceBufferSize: Int,
+      shutdownHookTimeout: Duration) =
+    this(
+      cancelationCheckThreshold,
+      autoYieldThreshold,
+      enhancedExceptions,
+      traceBufferSize,
+      shutdownHookTimeout,
+      IORuntimeConfig.DefaultReportUnhandledFiberErrors,
+      IORuntimeConfig.DefaultCpuStarvationCheckInterval,
+      IORuntimeConfig.DefaultCpuStarvationCheckInitialDelay,
+      IORuntimeConfig.DefaultCpuStarvationCheckThreshold
+    )
 
   private[unsafe] def copy(
       cancelationCheckThreshold: Int,
@@ -70,7 +143,12 @@ final case class IORuntimeConfig private (
       autoYieldThreshold,
       enhancedExceptions,
       traceBufferSize,
-      shutdownHookTimeout)
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold
+    )
 
   private[unsafe] def copy(
       cancelationCheckThreshold: Int,
@@ -80,7 +158,12 @@ final case class IORuntimeConfig private (
       autoYieldThreshold,
       enhancedExceptions,
       traceBufferSize,
-      shutdownHookTimeout)
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold
+    )
 
   private[effect] val traceBufferLogSize: Int =
     Math.round(Math.log(traceBufferSize.toDouble) / Math.log(2)).toInt
@@ -92,6 +175,10 @@ object IORuntimeConfig extends IORuntimeConfigCompanionPlatform {
   private[unsafe] def DefaultEnhancedExceptions = true
   private[unsafe] def DefaultTraceBufferSize = 16
   private[unsafe] def DefaultShutdownHookTimeout = Duration.Inf
+  private[unsafe] def DefaultReportUnhandledFiberErrors = true
+  private[unsafe] def DefaultCpuStarvationCheckInterval = 1.second
+  private[unsafe] def DefaultCpuStarvationCheckInitialDelay = 10.seconds
+  private[unsafe] def DefaultCpuStarvationCheckThreshold = 0.1d
 
   def apply(): IORuntimeConfig = Default
 
@@ -101,7 +188,12 @@ object IORuntimeConfig extends IORuntimeConfigCompanionPlatform {
       autoYieldThreshold,
       DefaultEnhancedExceptions,
       DefaultTraceBufferSize,
-      DefaultShutdownHookTimeout)
+      DefaultShutdownHookTimeout,
+      DefaultReportUnhandledFiberErrors,
+      DefaultCpuStarvationCheckInterval,
+      DefaultCpuStarvationCheckInitialDelay,
+      DefaultCpuStarvationCheckThreshold
+    )
 
   def apply(
       cancelationCheckThreshold: Int,
@@ -120,16 +212,62 @@ object IORuntimeConfig extends IORuntimeConfigCompanionPlatform {
       autoYieldThreshold: Int,
       enhancedExceptions: Boolean,
       traceBufferSize: Int,
-      shutdownHookTimeout: Duration): IORuntimeConfig = {
-    if (autoYieldThreshold % cancelationCheckThreshold == 0)
-      new IORuntimeConfig(
-        cancelationCheckThreshold,
-        autoYieldThreshold,
-        enhancedExceptions,
-        1 << Math.round(Math.log(traceBufferSize.toDouble) / Math.log(2)).toInt,
-        shutdownHookTimeout)
-    else
-      throw new AssertionError(
-        s"Auto yield threshold $autoYieldThreshold must be a multiple of cancelation check threshold $cancelationCheckThreshold")
+      shutdownHookTimeout: Duration): IORuntimeConfig =
+    apply(
+      cancelationCheckThreshold,
+      autoYieldThreshold,
+      enhancedExceptions,
+      traceBufferSize,
+      shutdownHookTimeout,
+      DefaultReportUnhandledFiberErrors,
+      DefaultCpuStarvationCheckInterval,
+      DefaultCpuStarvationCheckInitialDelay,
+      DefaultCpuStarvationCheckThreshold
+    )
+
+  def apply(
+      cancelationCheckThreshold: Int,
+      autoYieldThreshold: Int,
+      enhancedExceptions: Boolean,
+      traceBufferSize: Int,
+      shutdownHookTimeout: Duration,
+      reportUnhandledFiberErrors: Boolean,
+      cpuStarvationCheckInterval: FiniteDuration,
+      cpuStarvationCheckInitialDelay: Duration,
+      cpuStarvationCheckThreshold: Double
+  ): IORuntimeConfig = {
+    new IORuntimeConfig(
+      cancelationCheckThreshold,
+      autoYieldThreshold,
+      enhancedExceptions,
+      1 << Math.round(Math.log(traceBufferSize.toDouble) / Math.log(2)).toInt,
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay,
+      cpuStarvationCheckThreshold
+    )
   }
+
+  def apply(
+      cancelationCheckThreshold: Int,
+      autoYieldThreshold: Int,
+      enhancedExceptions: Boolean,
+      traceBufferSize: Int,
+      shutdownHookTimeout: Duration,
+      reportUnhandledFiberErrors: Boolean,
+      cpuStarvationCheckInterval: FiniteDuration,
+      cpuStarvationCheckInitialDelay: FiniteDuration,
+      cpuStarvationCheckThreshold: Double): IORuntimeConfig =
+    apply(
+      cancelationCheckThreshold,
+      autoYieldThreshold,
+      enhancedExceptions,
+      traceBufferSize,
+      shutdownHookTimeout,
+      reportUnhandledFiberErrors,
+      cpuStarvationCheckInterval,
+      cpuStarvationCheckInitialDelay: Duration,
+      cpuStarvationCheckThreshold
+    )
 }

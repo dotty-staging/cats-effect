@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,8 @@ package cats.effect.unsafe
 import cats.effect.unsafe.ref.{ReferenceQueue, WeakReference}
 
 import scala.annotation.tailrec
-import scala.collection.mutable
+
+import java.util.concurrent.atomic.AtomicBoolean
 
 private final class WeakBag[A <: AnyRef] {
   import WeakBag._
@@ -29,7 +30,8 @@ private final class WeakBag[A <: AnyRef] {
   private[this] val queue: ReferenceQueue[A] = new ReferenceQueue()
   private[this] var capacity: Int = 256
   private[this] var table: Array[Entry[A]] = new Array(capacity)
-  private[this] var index = 0
+  private[this] var index: Int = 0
+  private[unsafe] val synchronizationPoint: AtomicBoolean = new AtomicBoolean(true)
 
   @tailrec
   def insert(a: A): Handle = {
@@ -68,20 +70,17 @@ private final class WeakBag[A <: AnyRef] {
     }
   }
 
-  def toSet: Set[A] = {
-    val set = mutable.Set.empty[A]
+  def forEach(f: A => Unit): Unit = {
     var i = 0
     val sz = index
 
     while (i < sz) {
       val a = table(i).get()
       if (a ne null) {
-        set += a
+        f(a)
       }
       i += 1
     }
-
-    set.toSet
   }
 
   def size: Int = {

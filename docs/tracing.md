@@ -16,7 +16,7 @@ takes. This limitation is even more pronounced with Scala's `Future`
 (pre- 2.13), where an asynchronous boundary is inserted after each operation.
 As an inherently asynchronous data type, `IO` suffers a similar problem, but
 even the stack trace of an `IO` program executed completely synchronously is
-poluted with the implementation methods of the `IO` run-loop, trace information
+polluted with the implementation methods of the `IO` run-loop, trace information
 which is unnecessary and confusing for the end-user application.
 
 `IO` solves this problem by collecting a stack trace at various `IO` operations
@@ -101,7 +101,7 @@ specify the following JVM system properties:
 -Dcats.effect.tracing.mode=full -Dcats.effect.tracing.buffer.size=1024
 ```
 
-For instructions how to configure these settings on JS see the [`IORuntime` configuration page](scaling-and-tuning/io-runtime-config.md).
+For instructions how to configure these settings on JS see the [`IORuntime` configuration page](core/io-runtime-config.md).
 Additionally, we recommend installing the npm package [source-map-support](https://www.npmjs.com/package/source-map-support).
 This will use the [source map](https://nodejs.medium.com/source-maps-in-node-js-482872b56116) to create stack traces with line numbers for Scala code (and not line numbers for generated JS code, which are not so helpful!).
 Note that tracing is currently only supported on Scala.js in `fastLinkJS` (aka `fastOptJS`) mode.

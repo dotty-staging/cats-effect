@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import cats.data.{
 import cats.effect.kernel._
 import cats.syntax.all._
 
+import scala.annotation.tailrec
 import scala.util.{Random => SRandom}
 
 /**
@@ -144,6 +145,49 @@ trait Random[F[_]] { self =>
   def shuffleVector[A](v: Vector[A]): F[Vector[A]]
 
   /**
+   * Pseudorandomly chooses one of the given values.
+   */
+  def oneOf[A](x: A, xs: A*)(implicit ev: Applicative[F]): F[A] =
+    if (xs.isEmpty) {
+      x.pure[F]
+    } else {
+      nextIntBounded(1 + xs.size).map {
+        case 0 => x
+        case i => xs(i - 1)
+      }
+    }
+
+  /**
+   * Pseudorandomly chooses an element of the given collection.
+   *
+   * @return
+   *   a failed effect (NoSuchElementException) if the given collection is empty
+   */
+  def elementOf[A](xs: Iterable[A])(implicit ev: MonadThrow[F]): F[A] = {
+    val requireNonEmpty: F[Unit] =
+      if (xs.nonEmpty) ().pure[F]
+      else
+        new NoSuchElementException("Cannot choose a random element of an empty collection")
+          .raiseError[F, Unit]
+
+    requireNonEmpty *> nextIntBounded(xs.size).map { i =>
+      xs match {
+        case seq: scala.collection.Seq[A] => seq(i)
+        case _ =>
+          // we don't have an apply method, so iterate through
+          // the collection's iterator until we reach the chosen index
+          @tailrec
+          def loop(it: Iterator[A], n: Int): A = {
+            val next = it.next()
+            if (n == i) next
+            else loop(it, n + 1)
+          }
+          loop(xs.iterator, 0)
+      }
+    }
+  }
+
+  /**
    * Modifies the context in which this [[Random]] operates using the natural transformation
    * `f`.
    *
@@ -151,65 +195,11 @@ trait Random[F[_]] { self =>
    *   a [[Random]] in the new context obtained by mapping the current one using `f`
    */
   def mapK[G[_]](f: F ~> G): Random[G] =
-    new Random[G] {
-      override def betweenDouble(minInclusive: Double, maxExclusive: Double): G[Double] =
-        f(self.betweenDouble(minInclusive, maxExclusive))
+    new Random.TranslatedRandom[F, G](self)(f) {}
 
-      override def betweenFloat(minInclusive: Float, maxExclusive: Float): G[Float] =
-        f(self.betweenFloat(minInclusive, maxExclusive))
-
-      override def betweenInt(minInclusive: Int, maxExclusive: Int): G[Int] =
-        f(self.betweenInt(minInclusive, maxExclusive))
-
-      override def betweenLong(minInclusive: Long, maxExclusive: Long): G[Long] =
-        f(self.betweenLong(minInclusive, maxExclusive))
-
-      override def nextAlphaNumeric: G[Char] =
-        f(self.nextAlphaNumeric)
-
-      override def nextBoolean: G[Boolean] =
-        f(self.nextBoolean)
-
-      override def nextBytes(n: Int): G[Array[Byte]] =
-        f(self.nextBytes(n))
-
-      override def nextDouble: G[Double] =
-        f(self.nextDouble)
-
-      override def nextFloat: G[Float] =
-        f(self.nextFloat)
-
-      override def nextGaussian: G[Double] =
-        f(self.nextGaussian)
-
-      override def nextInt: G[Int] =
-        f(self.nextInt)
-
-      override def nextIntBounded(n: Int): G[Int] =
-        f(self.nextIntBounded(n))
-
-      override def nextLong: G[Long] =
-        f(self.nextLong)
-
-      override def nextLongBounded(n: Long): G[Long] =
-        f(self.nextLongBounded(n))
-
-      override def nextPrintableChar: G[Char] =
-        f(self.nextPrintableChar)
-
-      override def nextString(length: Int): G[String] =
-        f(self.nextString(length))
-
-      override def shuffleList[A](l: List[A]): G[List[A]] =
-        f(self.shuffleList(l))
-
-      override def shuffleVector[A](v: Vector[A]): G[Vector[A]] =
-        f(self.shuffleVector(v))
-
-    }
 }
 
-object Random {
+object Random extends RandomCompanionPlatform {
 
   def apply[F[_]](implicit ev: Random[F]): Random[F] = ev
 
@@ -330,45 +320,52 @@ object Random {
     }
 
   def javaUtilConcurrentThreadLocalRandom[F[_]: Sync]: Random[F] =
-    new ScalaRandom[F](
-      Sync[F].delay(new SRandom(java.util.concurrent.ThreadLocalRandom.current()))) {}
+    new ThreadLocalRandom[F] {}
 
+  @deprecated("Call SecureRandom.javaSecuritySecureRandom", "3.4.0")
   def javaSecuritySecureRandom[F[_]: Sync](n: Int): F[Random[F]] =
-    for {
-      ref <- Ref[F].of(0)
-      array <- Sync[F].delay(Array.fill(n)(new SRandom(new java.security.SecureRandom)))
-    } yield {
-      def incrGet = ref.modify(i => (if (i < (n - 1)) i + 1 else 0, i))
-      def selectRandom = incrGet.map(array(_))
-      new ScalaRandom[F](selectRandom) {}
+    SecureRandom.javaSecuritySecureRandom[F](n).widen[Random[F]]
+
+  @deprecated("Call SecureRandom.javaSecuritySecureRandom", "3.4.0")
+  def javaSecuritySecureRandom[F[_]: Sync]: F[Random[F]] =
+    SecureRandom.javaSecuritySecureRandom[F].widen[Random[F]]
+
+  private[std] sealed abstract class RandomCommon[F[_]: Sync] extends Random[F] {
+    def betweenDouble(minInclusive: Double, maxExclusive: Double): F[Double] = {
+      for {
+        _ <- require(minInclusive < maxExclusive, "Invalid bounds")
+        d <- nextDouble
+      } yield {
+        val diff = maxExclusive - minInclusive
+        val next = if (diff != java.lang.Double.POSITIVE_INFINITY) {
+          (d * diff) + minInclusive
+        } else { // overflow:
+          val maxHalf = maxExclusive / 2.0
+          val minHalf = minInclusive / 2.0
+          ((d * (maxHalf - minHalf)) + minHalf) * 2.0
+        }
+        if (next < maxExclusive) next
+        else Math.nextAfter(maxExclusive, Double.NegativeInfinity)
+      }
     }
 
-  def javaSecuritySecureRandom[F[_]: Sync]: F[Random[F]] =
-    Sync[F].delay(new java.security.SecureRandom).flatMap(r => javaUtilRandom(r))
-
-  private abstract class ScalaRandom[F[_]: Sync](f: F[SRandom]) extends Random[F] {
-
-    def betweenLong(minInclusive: Long, maxExclusive: Long): F[Long] =
-      require(minInclusive < maxExclusive, "Invalid bounds") *> {
-        val difference = maxExclusive - minInclusive
-        for {
-          out <-
-            if (difference >= 0) {
-              nextLongBounded(difference).map(_ + minInclusive)
-            } else {
-              /* The interval size here is greater than Long.MaxValue,
-               * so the loop will exit with a probability of at least 1/2.
-               */
-              def loop(): F[Long] = {
-                nextLong.flatMap { n =>
-                  if (n >= minInclusive && n < maxExclusive) n.pure[F]
-                  else loop()
-                }
-              }
-              loop()
-            }
-        } yield out
+    def betweenFloat(minInclusive: Float, maxExclusive: Float): F[Float] = {
+      for {
+        _ <- require(minInclusive < maxExclusive, "Invalid bounds")
+        f <- nextFloat
+      } yield {
+        val diff = maxExclusive - minInclusive
+        val next = if (diff != java.lang.Float.POSITIVE_INFINITY) {
+          (f * diff) + minInclusive
+        } else { // overflow:
+          val maxHalf = maxExclusive / 2.0f
+          val minHalf = minInclusive / 2.0f
+          ((f * (maxHalf - minHalf)) + minHalf) * 2.0f
+        }
+        if (next < maxExclusive) next
+        else Math.nextAfter(maxExclusive, Float.NegativeInfinity)
       }
+    }
 
     def betweenInt(minInclusive: Int, maxExclusive: Int): F[Int] =
       require(minInclusive < maxExclusive, "Invalid bounds") *> {
@@ -392,79 +389,32 @@ object Random {
         } yield out
       }
 
-    def betweenFloat(minInclusive: Float, maxExclusive: Float): F[Float] =
-      for {
-        _ <- require(minInclusive < maxExclusive, "Invalid bounds")
-        f <- nextFloat
-      } yield {
-        val next = f * (maxExclusive - minInclusive) + minInclusive
-        if (next < maxExclusive) next
-        else Math.nextAfter(maxExclusive, Float.NegativeInfinity)
-      }
-
-    def betweenDouble(minInclusive: Double, maxExclusive: Double): F[Double] =
-      for {
-        _ <- require(minInclusive < maxExclusive, "Invalid bounds")
-        d <- nextDouble
-      } yield {
-        val next = d * (maxExclusive - minInclusive) + minInclusive
-        if (next < maxExclusive) next
-        else Math.nextAfter(maxExclusive, Double.NegativeInfinity)
+    def betweenLong(minInclusive: Long, maxExclusive: Long): F[Long] =
+      require(minInclusive < maxExclusive, "Invalid bounds") *> {
+        val difference = maxExclusive - minInclusive
+        for {
+          out <-
+            if (difference >= 0) {
+              nextLongBounded(difference).map(_ + minInclusive)
+            } else {
+              /* The interval size here is greater than Long.MaxValue,
+               * so the loop will exit with a probability of at least 1/2.
+               */
+              def loop(): F[Long] = {
+                nextLong.flatMap { n =>
+                  if (n >= minInclusive && n < maxExclusive) n.pure[F]
+                  else loop()
+                }
+              }
+              loop()
+            }
+        } yield out
       }
 
     def nextAlphaNumeric: F[Char] = {
       val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
       nextIntBounded(chars.length()).map(chars.charAt(_))
     }
-
-    def nextBoolean: F[Boolean] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextBoolean())
-      } yield out
-
-    def nextBytes(n: Int): F[Array[Byte]] =
-      for {
-        r <- f
-        bytes = new Array[Byte](0 max n)
-        _ <- Sync[F].delay(r.nextBytes(bytes))
-      } yield bytes
-
-    def nextDouble: F[Double] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextDouble())
-      } yield out
-
-    def nextFloat: F[Float] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextFloat())
-      } yield out
-
-    def nextGaussian: F[Double] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextGaussian())
-      } yield out
-
-    def nextInt: F[Int] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextInt())
-      } yield out
-
-    def nextIntBounded(n: Int): F[Int] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.self.nextInt(n))
-      } yield out
-
-    def nextLong: F[Long] =
-      for {
-        r <- f
-        out <- Sync[F].delay(r.nextLong())
-      } yield out
 
     def nextLongBounded(n: Long): F[Long] = {
       /*
@@ -494,32 +444,196 @@ object Random {
       } yield finalOffset + int
     }
 
+    private def require(condition: Boolean, errorMessage: => String): F[Unit] =
+      if (condition) ().pure[F]
+      else new IllegalArgumentException(errorMessage).raiseError[F, Unit]
+
+  }
+
+  private[std] abstract class ScalaRandom[F[_]: Sync](f: F[SRandom], hint: Sync.Type)
+      extends RandomCommon[F] {
+
+    def this(f: F[SRandom]) = this(f, Sync.Type.Delay)
+
+    def nextBoolean: F[Boolean] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextBoolean())
+      } yield out
+
+    def nextBytes(n: Int): F[Array[Byte]] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint) {
+          val bytes = new Array[Byte](0 max n)
+          r.nextBytes(bytes)
+          bytes
+        }
+      } yield out
+
+    def nextDouble: F[Double] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextDouble())
+      } yield out
+
+    def nextFloat: F[Float] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextFloat())
+      } yield out
+
+    def nextGaussian: F[Double] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextGaussian())
+      } yield out
+
+    def nextInt: F[Int] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextInt())
+      } yield out
+
+    def nextIntBounded(n: Int): F[Int] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.self.nextInt(n))
+      } yield out
+
+    def nextLong: F[Long] =
+      for {
+        r <- f
+        out <- Sync[F].suspend(hint)(r.nextLong())
+      } yield out
+
     def nextPrintableChar: F[Char] =
       for {
         r <- f
-        out <- Sync[F].delay(r.nextPrintableChar())
+        out <- Sync[F].suspend(hint)(r.nextPrintableChar())
       } yield out
 
     def nextString(length: Int): F[String] =
       for {
         r <- f
-        out <- Sync[F].delay(r.nextString(length))
+        out <- Sync[F].suspend(hint)(r.nextString(length))
       } yield out
 
     def shuffleList[A](l: List[A]): F[List[A]] =
       for {
         r <- f
-        out <- Sync[F].delay(r.shuffle(l))
+        out <- Sync[F].suspend(hint)(r.shuffle(l))
       } yield out
 
     def shuffleVector[A](v: Vector[A]): F[Vector[A]] =
       for {
         r <- f
-        out <- Sync[F].delay(r.shuffle(v))
+        out <- Sync[F].suspend(hint)(r.shuffle(v))
       } yield out
+  }
 
-    private def require(condition: Boolean, errorMessage: => String): F[Unit] =
-      if (condition) ().pure[F]
-      else new IllegalArgumentException(errorMessage).raiseError[F, Unit]
+  private abstract class ThreadLocalRandom[F[_]: Sync] extends RandomCommon[F] {
+    def nextBoolean: F[Boolean] =
+      Sync[F].delay(localRandom().nextBoolean())
+
+    def nextBytes(n: Int): F[Array[Byte]] = Sync[F].delay {
+      val bytes = new Array[Byte](0 max n)
+      localRandom().nextBytes(bytes)
+      bytes
+    }
+
+    def nextDouble: F[Double] =
+      Sync[F].delay(localRandom().nextDouble())
+
+    def nextFloat: F[Float] =
+      Sync[F].delay(localRandom().nextFloat())
+
+    def nextGaussian: F[Double] =
+      Sync[F].delay(localRandom().nextGaussian())
+
+    def nextInt: F[Int] =
+      Sync[F].delay(localRandom().nextInt())
+
+    def nextIntBounded(n: Int): F[Int] =
+      Sync[F].delay(localRandom().self.nextInt(n))
+
+    def nextLong: F[Long] =
+      Sync[F].delay(localRandom().nextLong())
+
+    def nextPrintableChar: F[Char] =
+      Sync[F].delay(localRandom().nextPrintableChar())
+
+    def nextString(length: Int): F[String] =
+      Sync[F].delay(localRandom().nextString(length))
+
+    def shuffleList[A](l: List[A]): F[List[A]] =
+      Sync[F].delay(localRandom().shuffle(l))
+
+    def shuffleVector[A](v: Vector[A]): F[Vector[A]] =
+      Sync[F].delay(localRandom().shuffle(v))
+  }
+
+  private[this] def localRandom() = new SRandom(
+    java.util.concurrent.ThreadLocalRandom.current())
+
+  private[std] abstract class TranslatedRandom[F[_], G[_]](self: Random[F])(f: F ~> G)
+      extends Random[G] {
+    override def betweenDouble(minInclusive: Double, maxExclusive: Double): G[Double] =
+      f(self.betweenDouble(minInclusive, maxExclusive))
+
+    override def betweenFloat(minInclusive: Float, maxExclusive: Float): G[Float] =
+      f(self.betweenFloat(minInclusive, maxExclusive))
+
+    override def betweenInt(minInclusive: Int, maxExclusive: Int): G[Int] =
+      f(self.betweenInt(minInclusive, maxExclusive))
+
+    override def betweenLong(minInclusive: Long, maxExclusive: Long): G[Long] =
+      f(self.betweenLong(minInclusive, maxExclusive))
+
+    override def nextAlphaNumeric: G[Char] =
+      f(self.nextAlphaNumeric)
+
+    override def nextBoolean: G[Boolean] =
+      f(self.nextBoolean)
+
+    override def nextBytes(n: Int): G[Array[Byte]] =
+      f(self.nextBytes(n))
+
+    override def nextDouble: G[Double] =
+      f(self.nextDouble)
+
+    override def nextFloat: G[Float] =
+      f(self.nextFloat)
+
+    override def nextGaussian: G[Double] =
+      f(self.nextGaussian)
+
+    override def nextInt: G[Int] =
+      f(self.nextInt)
+
+    override def nextIntBounded(n: Int): G[Int] =
+      f(self.nextIntBounded(n))
+
+    override def nextLong: G[Long] =
+      f(self.nextLong)
+
+    override def nextLongBounded(n: Long): G[Long] =
+      f(self.nextLongBounded(n))
+
+    override def nextPrintableChar: G[Char] =
+      f(self.nextPrintableChar)
+
+    override def nextString(length: Int): G[String] =
+      f(self.nextString(length))
+
+    override def shuffleList[A](l: List[A]): G[List[A]] =
+      f(self.shuffleList(l))
+
+    override def shuffleVector[A](v: Vector[A]): G[Vector[A]] =
+      f(self.shuffleVector(v))
+
   }
 }
+
+// Vestigial shim
+private[std] trait RandomCompanionPlatform

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2025 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@ import cats.syntax.all._
 import cats.~>
 
 /**
- * Concurrency abstraction that supports semantically blocking until n latches are released.
- * Note that this has 'one-shot' semantics - once the counter reaches 0 then [[release]] and
- * [[await]] will forever be no-ops
+ * Concurrency abstraction that supports fiber blocking until n latches are released. Note that
+ * this has 'one-shot' semantics - once the counter reaches 0 then [[release]] and [[await]]
+ * will forever be no-ops
  *
  * See https://typelevel.org/blog/2020/10/30/concurrency-in-ce3.html for a walkthrough of
  * building something like this
@@ -54,7 +54,7 @@ object CountDownLatch {
   /**
    * Initialize a CountDown latch with n latches
    */
-  def apply[F[_]](n: Int)(implicit F: GenConcurrent[F, _]): F[CountDownLatch[F]] =
+  def apply[F[_]](n: Int)(implicit F: GenConcurrent[F, ?]): F[CountDownLatch[F]] =
     if (n < 1)
       throw new IllegalArgumentException(
         s"Initialized with $n latches. Number of latches must be > 0")
@@ -65,16 +65,14 @@ object CountDownLatch {
       } yield new ConcurrentCountDownLatch[F](ref)
 
   private[std] class ConcurrentCountDownLatch[F[_]](state: Ref[F, State[F]])(
-      implicit F: GenConcurrent[F, _])
+      implicit F: GenConcurrent[F, ?])
       extends CountDownLatch[F] {
 
     override def release: F[Unit] =
-      F.uncancelable { _ =>
-        state.modify {
-          case Awaiting(n, signal) =>
-            if (n > 1) (Awaiting(n - 1, signal), F.unit) else (Done(), signal.complete(()).void)
-          case d @ Done() => (d, F.unit)
-        }.flatten
+      state.flatModify {
+        case Awaiting(n, signal) =>
+          if (n > 1) (Awaiting(n - 1, signal), F.unit) else (Done(), signal.complete(()).void)
+        case d @ Done() => (d, F.unit)
       }
 
     override def await: F[Unit] =
@@ -91,7 +89,7 @@ object CountDownLatch {
   private[std] case class Done[F[_]]() extends State[F]
 
   private[std] object State {
-    def initial[F[_]](n: Int)(implicit F: GenConcurrent[F, _]): F[State[F]] =
+    def initial[F[_]](n: Int)(implicit F: GenConcurrent[F, ?]): F[State[F]] =
       F.deferred[Unit].map { signal => Awaiting(n, signal) }
   }
 
