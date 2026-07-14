@@ -201,7 +201,7 @@ private final class TimerHeap extends AtomicInteger {
       delay: Long,
       callback: Right[Nothing, Unit] => Unit,
       out: Array[Right[Nothing, Unit] => Unit]
-  ): Function0[Unit] with Runnable = {
+  ): Function0[Unit] & Runnable = {
     totalScheduled += 1
 
     if (size > 0) {

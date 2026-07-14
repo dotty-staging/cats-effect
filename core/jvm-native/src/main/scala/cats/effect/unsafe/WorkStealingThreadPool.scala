@@ -655,7 +655,7 @@ private[effect] final class WorkStealingThreadPool[P <: AnyRef](
    */
   def sleepInternal(
       delay: FiniteDuration,
-      callback: Right[Nothing, Unit] => Unit): Function0[Unit] with Runnable = {
+      callback: Right[Nothing, Unit] => Unit): Function0[Unit] & Runnable = {
     val thread = Thread.currentThread()
     if (thread.isInstanceOf[WorkerThread[?]]) {
       val worker = thread.asInstanceOf[WorkerThread[P]]
@@ -676,7 +676,7 @@ private[effect] final class WorkStealingThreadPool[P <: AnyRef](
    */
   private[this] final def sleepExternal(
       delay: FiniteDuration,
-      callback: Right[Nothing, Unit] => Unit): Function0[Unit] with Runnable = {
+      callback: Right[Nothing, Unit] => Unit): Function0[Unit] & Runnable = {
     val scheduledAt = monotonicNanos()
     val cancel = new ExternalSleepCancel
 

@@ -38,7 +38,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       pollingSystem: PollingSystem = createDefaultPollingSystem(),
       uncaughtExceptionHandler: Thread.UncaughtExceptionHandler = (_, ex) =>
         ex.printStackTrace()
-  ): (ExecutionContextExecutor with Scheduler, pollingSystem.Api, () => Unit) = {
+  ): (ExecutionContextExecutor & Scheduler, pollingSystem.Api, () => Unit) = {
 
     val threadPool =
       new WorkStealingThreadPool[pollingSystem.Poller](

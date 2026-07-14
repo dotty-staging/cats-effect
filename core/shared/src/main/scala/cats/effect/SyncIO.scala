@@ -630,7 +630,7 @@ object SyncIO extends SyncIOCompanionPlatform with SyncIOLowPriorityImplicits {
       fa.attempt.productR(fb)
   }
 
-  implicit def syncForSyncIO: Sync[SyncIO] with MonadCancel[SyncIO, Throwable] = _syncForSyncIO
+  implicit def syncForSyncIO: Sync[SyncIO] & MonadCancel[SyncIO, Throwable] = _syncForSyncIO
 
   // implementations
 

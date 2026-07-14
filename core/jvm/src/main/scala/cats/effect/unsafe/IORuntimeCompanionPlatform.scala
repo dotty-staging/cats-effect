@@ -40,7 +40,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       blockerThreadPrefix: String,
       runtimeBlockingExpiration: Duration,
       reportFailure: Throwable => Unit
-  ): (ExecutionContextExecutor with Scheduler, () => Unit) =
+  ): (ExecutionContextExecutor & Scheduler, () => Unit) =
     createWorkStealingComputeThreadPool(
       threads,
       threadPrefix,
@@ -58,7 +58,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       runtimeBlockingExpiration: Duration,
       reportFailure: Throwable => Unit,
       blockedThreadDetectionEnabled: Boolean
-  ): (ExecutionContextExecutor with Scheduler, () => Unit) = {
+  ): (ExecutionContextExecutor & Scheduler, () => Unit) = {
     val (pool, _, shutdown) = createWorkStealingComputeThreadPool(
       threads,
       threadPrefix,
@@ -84,7 +84,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       pollingSystem: PollingSystem = SelectorSystem(),
       uncaughtExceptionHandler: Thread.UncaughtExceptionHandler = (_, ex) =>
         ex.printStackTrace()
-  ): (ExecutionContextExecutor with Scheduler, pollingSystem.Api, () => Unit) = {
+  ): (ExecutionContextExecutor & Scheduler, pollingSystem.Api, () => Unit) = {
     val threadPool =
       new WorkStealingThreadPool[pollingSystem.Poller](
         threads,
@@ -215,7 +215,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
       threads: Int = Math.max(2, Runtime.getRuntime().availableProcessors()),
       threadPrefix: String = "io-compute",
       blockerThreadPrefix: String = DefaultBlockerPrefix)
-      : (ExecutionContextExecutor with Scheduler, () => Unit) =
+      : (ExecutionContextExecutor & Scheduler, () => Unit) =
     createWorkStealingComputeThreadPool(
       threads,
       threadPrefix,
@@ -229,7 +229,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
   def createDefaultComputeThreadPool(
       self: () => IORuntime,
       threads: Int,
-      threadPrefix: String): (ExecutionContextExecutor with Scheduler, () => Unit) =
+      threadPrefix: String): (ExecutionContextExecutor & Scheduler, () => Unit) =
     createDefaultComputeThreadPool(self(), threads, threadPrefix)
 
   def createDefaultBlockingExecutionContext(
